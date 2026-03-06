@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>arche</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <!-- xterm.js -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+</head>
+<body>
+  <div id="app">
+    <!-- Header -->
+    <header id="header">
+      <span class="logo">arche</span>
+      <span id="project-name" class="project-name">loading...</span>
+      <span class="header-actions">
+        <button id="btn-new-plan" class="btn-sm">+ New track</button>
+        <button id="btn-web-refresh" class="btn-sm btn-ghost" title="Refresh">↺</button>
+        <button id="btn-docs" class="btn-sm btn-ghost" title="Documentation">?</button>
+      </span>
+    </header>
+
+    <!-- Main layout -->
+    <div id="main">
+      <!-- Sidebar: plan list -->
+      <aside id="sidebar">
+        <div class="sidebar-label">TRACKS</div>
+        <div id="plan-list"></div>
+      </aside>
+
+      <!-- Central panel -->
+      <section id="panel">
+        <div id="plan-header"></div>
+        <div id="plan-tabs">
+          <button class="tab" data-tab="spec">Spec</button>
+          <button class="tab active" data-tab="tasks">Tasks</button>
+          <button class="tab" data-tab="output">Output</button>
+        </div>
+        <div id="tab-content">
+          <div id="tab-tasks" class="tab-pane active"></div>
+          <div id="tab-spec" class="tab-pane"></div>
+          <div id="tab-output" class="tab-pane">
+            <div id="output-header" class="output-header"></div>
+            <pre id="output-pre" class="output-pre"></pre>
+            <!-- Interview: start panel -->
+            <div id="interview-start" class="interview-panel hidden">
+              <div class="interview-label">Describe what you want to build:</div>
+              <textarea id="interview-description" rows="4" placeholder="I want to build…"></textarea>
+              <div class="interview-btn-row">
+                <button class="btn-primary btn-sm" onclick="startInterviewFromInput()">Start Interview →</button>
+                <button class="btn-ghost btn-sm" onclick="cancelInterviewStart()">Cancel</button>
+              </div>
+            </div>
+            <!-- Interview: answer panel -->
+            <div id="interview-answer-panel" class="interview-panel hidden">
+              <div class="interview-label">Your answer:</div>
+              <textarea id="interview-answer" rows="3" placeholder="Your answer…"></textarea>
+              <div class="interview-btn-row">
+                <button class="btn-primary btn-sm" onclick="submitInterviewAnswer()">Answer →</button>
+                <button class="btn-ghost btn-sm" onclick="finishInterview()">That's all I have →</button>
+              </div>
+            </div>
+            <!-- Review actions (shown on FAIL verdict) -->
+            <div id="review-actions" class="review-actions hidden">
+              <span class="review-actions-label">Review failed —</span>
+              <button class="btn-primary btn-sm" onclick="createReworkTask()">↩ Create Rework Task</button>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- Console -->
+    <div id="console-wrapper">
+      <div id="console-resize-handle" title="Drag to resize terminal"></div>
+      <div id="console-bar">
+        <div id="terminal-tabs"></div>
+        <span id="console-status" class="console-status" title="Active terminal status">●</span>
+        <button id="btn-add-terminal" class="btn-ghost btn-sm" title="New terminal">+</button>
+        <button id="btn-console-toggle" class="btn-ghost btn-sm">−</button>
+      </div>
+      <div id="terminal-container"></div>
+    </div>
+  </div>
+
+  <!-- Edit task modal -->
+  <div id="modal-edit-overlay" class="hidden modal-overlay">
+    <div class="modal">
+      <h3>Edit Task</h3>
+      <input id="edit-task-title" type="text" placeholder="Title" autocomplete="off">
+      <textarea id="edit-task-desc" placeholder="Description" rows="3"></textarea>
+      <textarea id="edit-task-notes" placeholder="Notes" rows="2"></textarea>
+      <div class="modal-actions">
+        <button id="edit-cancel" class="btn-ghost">Cancel</button>
+        <button id="edit-save" class="btn-primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Block task modal -->
+  <div id="modal-block-overlay" class="hidden modal-overlay">
+    <div class="modal">
+      <h3>Block Task</h3>
+      <div id="block-task-title" class="modal-subtitle"></div>
+      <textarea id="block-task-reason" placeholder="Reason (required)" rows="3"></textarea>
+      <div class="modal-actions">
+        <button id="block-cancel" class="btn-ghost">Cancel</button>
+        <button id="block-confirm" class="btn-primary">Mark Blocked</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Complete task modal -->
+  <div id="modal-done-overlay" class="hidden modal-overlay">
+    <div class="modal">
+      <h3>Complete Task</h3>
+      <div id="done-task-title" class="modal-subtitle"></div>
+      <textarea id="done-task-notes" placeholder="Notes (optional)" rows="3"></textarea>
+      <div class="modal-actions">
+        <button id="done-cancel" class="btn-ghost">Cancel</button>
+        <button id="done-confirm" class="btn-primary">Mark Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Run task modal -->
+  <div id="modal-run-overlay" class="hidden modal-overlay">
+    <div class="modal">
+      <h3>Run Task</h3>
+      <div id="run-task-title" class="modal-subtitle"></div>
+      <label class="modal-section-label" for="run-task-comment">Comment <span class="modal-hint">(optional — bug found, extra context…)</span></label>
+      <textarea id="run-task-comment" rows="4" placeholder="e.g. The login redirect fails with a 403, focus on the JWT validation…"></textarea>
+      <div class="modal-actions">
+        <button id="run-cancel" class="btn-ghost">Cancel</button>
+        <button id="run-confirm" class="btn-primary">▶ Run</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add task modal -->
+  <div id="modal-add-task-overlay" class="hidden modal-overlay">
+    <div class="modal">
+      <h3>Add Task</h3>
+      <input id="add-task-title" type="text" placeholder="Task title" autocomplete="off">
+      <div class="modal-actions">
+        <button id="add-task-cancel" class="btn-ghost">Cancel</button>
+        <button id="add-task-confirm" class="btn-primary">Add Task</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- New track modal -->
+  <div id="modal-overlay" class="hidden modal-overlay">
+    <div class="modal modal-wide" id="modal">
+      <h3>New Track</h3>
+      <div class="modal-section-label">Track name</div>
+      <input id="modal-plan-name" type="text" placeholder="e.g. feat: JWT auth" autocomplete="off">
+      <div class="modal-section-label">Spec <span class="modal-hint">(fill in to auto-generate tasks)</span></div>
+      <input id="spec-goal" type="text" placeholder="Goal — main objective in one sentence">
+      <textarea id="spec-context" placeholder="Context — existing codebase, related features…" rows="2"></textarea>
+      <textarea id="spec-requirements" placeholder="Requirements — one per line" rows="3"></textarea>
+      <textarea id="spec-constraints" placeholder="Constraints — forbidden approaches, perf targets… (optional)" rows="2"></textarea>
+      <input id="spec-out-of-scope" type="text" placeholder="Out of scope (optional)">
+      <div class="modal-actions">
+        <button id="modal-cancel" class="btn-ghost">Cancel</button>
+        <button id="modal-create-only" class="btn-ghost btn-sm">Create only</button>
+        <button id="modal-create" class="btn-primary">Create &amp; Generate tasks ✦</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- New phase modal -->
+  <div id="modal-phase-overlay" class="hidden modal-overlay">
+    <div class="modal">
+      <h3>New Phase</h3>
+      <input id="modal-phase-name" type="text" placeholder="Phase name (e.g. Backend API)" autocomplete="off">
+      <textarea id="modal-phase-desc" placeholder="Description (optional)" rows="2"></textarea>
+      <div class="modal-actions">
+        <button id="phase-cancel" class="btn-ghost">Cancel</button>
+        <button id="phase-create" class="btn-primary">Create Phase</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Docs modal -->
+  <div id="modal-docs-overlay" class="hidden modal-overlay">
+    <div class="modal modal-docs" id="modal-docs">
+      <div class="docs-header">
+        <h3>arche — documentation</h3>
+        <button id="docs-close" class="btn-ghost btn-sm">✕</button>
+      </div>
+      <div class="docs-body">
+
+        <div class="docs-section">
+          <div class="docs-section-title">What is arche?</div>
+          <p>arche keeps your <strong>project context alive</strong> between sessions. It breaks work into <strong>Tracks</strong> and <strong>Tasks</strong>, then runs each task by automatically feeding the full context (spec, architecture memory, history) to your LLM CLI (<code>claude</code>, <code>gemini</code>…).</p>
+        </div>
+
+        <div class="docs-section">
+          <div class="docs-section-title">Core concepts</div>
+          <div class="docs-table">
+            <div class="docs-row"><span class="docs-term">Track</span><span>A unit of work (feature, bugfix, refactor…). Has its own spec, tasks, and session log. Only one track is ACTIVE at a time.</span></div>
+            <div class="docs-row"><span class="docs-term">Task</span><span>A single step inside a track. arche builds the full context and calls your LLM to execute it.</span></div>
+            <div class="docs-row"><span class="docs-term">spec.md</span><span>Goal + requirements for the track — written once, used as context for every task run.</span></div>
+            <div class="docs-row"><span class="docs-term">archi.md</span><span>Architecture memory — automatically updated after each task run. Grows richer over time.</span></div>
+          </div>
+        </div>
+
+        <div class="docs-section">
+          <div class="docs-section-title">Task statuses</div>
+          <div class="docs-table">
+            <div class="docs-row"><span class="docs-badge docs-todo">· TODO</span><span>Not started yet.</span></div>
+            <div class="docs-row"><span class="docs-badge docs-inprogress">▶ IN PROGRESS</span><span>Currently being worked on. Only one task at a time. Set automatically when you click <strong>▶ Run</strong>.</span></div>
+            <div class="docs-row"><span class="docs-badge docs-done">✓ DONE</span><span>Completed. Use <strong>✓ Done</strong> in the action bar or <code>arche task done</code>.</span></div>
+            <div class="docs-row"><span class="docs-badge docs-blocked">✗ BLOCKED</span><span>Waiting on something external. Use <strong>✗ Block</strong> with a reason.</span></div>
+          </div>
+        </div>
+
+        <div class="docs-section">
+          <div class="docs-section-title">Web UI — action bar</div>
+          <div class="docs-table">
+            <div class="docs-row"><span class="docs-term">▶ Run</span><span>Set task IN PROGRESS and stream LLM output to the Output tab.</span></div>
+            <div class="docs-row"><span class="docs-term">✎ Edit</span><span>Edit task title, description, and notes.</span></div>
+            <div class="docs-row"><span class="docs-term">✓ Done</span><span>Mark the selected task as DONE (with optional notes).</span></div>
+            <div class="docs-row"><span class="docs-term">✗ Block</span><span>Mark task as BLOCKED with a reason.</span></div>
+          </div>
+        </div>
+
+        <div class="docs-section">
+          <div class="docs-section-title">CLI — quick reference</div>
+          <div class="docs-table mono">
+            <div class="docs-row hdr"><span>Setup</span></div>
+            <div class="docs-row"><span class="docs-cmd">arche init</span><span>Configure project + choose LLM model per phase</span></div>
+            <div class="docs-row"><span class="docs-cmd">arche web</span><span>Start the web UI (port 7331)</span></div>
+            <div class="docs-row hdr"><span>Tracks</span></div>
+            <div class="docs-row"><span class="docs-cmd">arche track new "feat: …"</span><span>Create track — spec Q&amp;A → task generation</span></div>
+            <div class="docs-row"><span class="docs-cmd">arche track list</span><span>List all tracks with progress bars</span></div>
+            <div class="docs-row"><span class="docs-cmd">arche track switch &lt;name&gt;</span><span>Switch active track</span></div>
+            <div class="docs-row"><span class="docs-cmd">arche track plan</span><span>Generate tasks from existing spec</span></div>
+            <div class="docs-row"><span class="docs-cmd">arche track done</span><span>Mark active track as complete</span></div>
+            <div class="docs-row hdr"><span>Tasks — main loop</span></div>
+            <div class="docs-row"><span class="docs-cmd">arche task run</span><span>★ Run current task with full context → LLM</span></div>
+            <div class="docs-row"><span class="docs-cmd">arche task run --auto-done</span><span>Run + mark DONE automatically</span></div>
+            <div class="docs-row"><span class="docs-cmd">arche task done</span><span>Mark done, advance to next</span></div>
+            <div class="docs-row"><span class="docs-cmd">arche task block "reason"</span><span>Mark current task blocked</span></div>
+            <div class="docs-row"><span class="docs-cmd">arche task add "title"</span><span>Add a task manually</span></div>
+            <div class="docs-row"><span class="docs-cmd">arche task switch &lt;n|id|title&gt;</span><span>Jump to a specific task</span></div>
+            <div class="docs-row"><span class="docs-cmd">arche task list</span><span>List all tasks</span></div>
+            <div class="docs-row hdr"><span>Spec</span></div>
+            <div class="docs-row"><span class="docs-cmd">arche spec qa</span><span>Q&amp;A interview → spec + LLM refinement</span></div>
+            <div class="docs-row"><span class="docs-cmd">arche spec refine</span><span>Refine existing spec with LLM (no Q&amp;A)</span></div>
+            <div class="docs-row"><span class="docs-cmd">arche spec show</span><span>Display the current spec</span></div>
+            <div class="docs-row hdr"><span>LLM ad-hoc</span></div>
+            <div class="docs-row"><span class="docs-cmd">arche dev "instruction"</span><span>Free-form coding with track context</span></div>
+            <div class="docs-row"><span class="docs-cmd">arche debug "error"</span><span>Analyse error + fix with track context</span></div>
+            <div class="docs-row"><span class="docs-cmd">arche doc</span><span>Generate documentation (Gemini large context)</span></div>
+            <div class="docs-row"><span class="docs-cmd">arche log "note"</span><span>Add a manual note to the session journal</span></div>
+          </div>
+        </div>
+
+        <div class="docs-section">
+          <div class="docs-section-title">Storage layout</div>
+          <pre class="docs-pre">storage/tracks/{track-id}/
+├── spec.md       ← track goal and requirements
+├── archi.md      ← architecture memory (auto-updated)
+├── tasks.yaml    ← tasks, statuses, notes
+└── sessions/     ← {date}.md — full LLM output per session</pre>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,2 @@
+[console_scripts]
+arche = arche:app

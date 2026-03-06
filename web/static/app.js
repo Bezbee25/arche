@@ -1,0 +1,1539 @@
+/* arche web UI — vanilla JS */
+'use strict';
+
+const API = '';  // Same origin
+
+// ── State ──────────────────────────────────────────────────────────────────
+const state = {
+  plans: [],
+  selectedPlanId: null,
+  activeTab: 'tasks',
+  consoleCollapsed: false,
+  terminals: [],
+  activeTerminalId: null,
+  pollInterval: null,
+  outputText: '',
+  outputRunning: false,
+  outputEventSource: null,
+  _outputMeta: '',
+  _outputDone: false,   // true after first __DONE__ received (prevents placeholder reset)
+  editingTask: null,
+  doneTask: null,
+  blockTask: null,
+  uiSelectedTaskId: null,   // tâche cliquée dans l'UI (pour les actions)
+  taskFilter: 'all',        // 'all' | 'TODO' | 'SELECTED' | 'IN_PROGRESS' | 'DONE'
+  runTask: null,            // { trackId, taskId } | null
+  interview: null,          // { planId, description, qa, currentQuestion } | null
+  reviewTask: null,         // { planId, taskId, verdict, issues } | null
+  newPhasePlanId: null,
+  addTaskTrackId: null,
+};
+
+let _termCounter = 0;
+
+// ── API helpers ────────────────────────────────────────────────────────────
+async function apiFetch(path, opts = {}) {
+  try {
+    const res = await fetch(API + path, {
+      headers: { 'Content-Type': 'application/json' },
+      ...opts,
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      console.error(`API ${res.status} ${path}`, body);
+      throw new Error(`HTTP ${res.status}`);
+    }
+    return res.json();
+  } catch (e) {
+    console.error('API error', path, e);
+    return null;
+  }
+}
+
+const api = {
+  saveSpec: (planId, content) => apiFetch(`/api/tracks/${planId}/spec`, { method: 'POST', body: JSON.stringify({ content }) }),
+  getProject: () => apiFetch('/api/project'),
+  getTracks: () => apiFetch('/api/tracks'),
+  getActive: () => apiFetch('/api/tracks/active'),
+  getTrack: (id) => apiFetch(`/api/tracks/${id}`),
+  getTrackSpec: (id) => apiFetch(`/api/tracks/${id}/spec`),
+  getSession: (trackId, date) => apiFetch(`/api/tracks/${trackId}/sessions/${date}`),
+  createTrack: (name) => apiFetch('/api/tracks', { method: 'POST', body: JSON.stringify({ name }) }),
+  switchTrack: (id) => apiFetch('/api/tracks/switch', { method: 'POST', body: JSON.stringify({ track_id: id }) }),
+  doneTrack: (id) => apiFetch(`/api/tracks/${id}/done`, { method: 'POST' }),
+  nextTask: (trackId) => apiFetch(`/api/tracks/${trackId}/tasks/next`, { method: 'POST' }),
+  addTask: (trackId, title) => apiFetch(`/api/tracks/${trackId}/tasks`, { method: 'POST', body: JSON.stringify({ title }) }),
+  doneTask: (trackId, taskId, notes = '') => apiFetch(`/api/tracks/${trackId}/tasks/done`, { method: 'POST', body: JSON.stringify({ task_id: taskId, notes }) }),
+  blockTask: (trackId, taskId, reason) => apiFetch(`/api/tracks/${trackId}/tasks/block`, { method: 'POST', body: JSON.stringify({ task_id: taskId, reason }) }),
+  selectTask: (trackId, taskId) => apiFetch(`/api/tracks/${trackId}/tasks/${taskId}/select`, { method: 'POST' }),
+  updateTask: (trackId, taskId, updates) => apiFetch(`/api/tracks/${trackId}/tasks/${taskId}`, { method: 'PATCH', body: JSON.stringify(updates) }),
+  reworkTask: (trackId, taskId, issues) => apiFetch(`/api/tracks/${trackId}/tasks/${taskId}/rework`, { method: 'POST', body: JSON.stringify({ review_issues: issues }) }),
+  // Phases
+  getPhases: (trackId) => apiFetch(`/api/tracks/${trackId}/phases`),
+  createPhase: (trackId, name, desc, depends_on = []) => apiFetch(`/api/tracks/${trackId}/phases`, { method: 'POST', body: JSON.stringify({ name, description: desc, depends_on }) }),
+  deletePhase: (trackId, phaseId) => apiFetch(`/api/tracks/${trackId}/phases/${phaseId}`, { method: 'DELETE' }),
+};
+
+// ── DOM refs ───────────────────────────────────────────────────────────────
+const $ = (sel) => document.querySelector(sel);
+const $id = (id) => document.getElementById(id);
+
+// ── Init ───────────────────────────────────────────────────────────────────
+async function init() {
+  setupTerminal();
+  setupResizableConsole();
+  setupEventListeners();
+  await refresh();
+  startPolling();
+}
+
+async function refresh() {
+  const [project, plans] = await Promise.all([api.getProject(), api.getTracks()]);
+  if (project) {
+    $id('project-name').textContent = project.name || 'unknown project';
+  }
+  if (plans) {
+    state.plans = plans;
+    renderSidebar(plans);
+
+    // Auto-select active plan
+    const activePlan = plans.find(p => p.status === 'ACTIVE');
+    if (activePlan && !state.selectedPlanId) {
+      state.selectedPlanId = activePlan.id;
+    }
+
+    if (state.selectedPlanId) {
+      await renderPanelFor(state.selectedPlanId);
+    } else if (plans.length > 0) {
+      state.selectedPlanId = plans[0].id;
+      await renderPanelFor(plans[0].id);
+    } else {
+      renderEmptyPanel();
+    }
+  }
+}
+
+function startPolling() {
+  state.pollInterval = setInterval(refresh, 3000);
+}
+
+// ── Sidebar ────────────────────────────────────────────────────────────────
+function renderSidebar(plans) {
+  const container = $id('plan-list');
+  if (plans.length === 0) {
+    container.innerHTML = '<div class="empty-state">No tracks yet</div>';
+    return;
+  }
+
+  container.innerHTML = plans.map(p => {
+    const stats = p.stats || {};
+    const done = stats.DONE || 0;
+    const total = stats.total || 0;
+    const pct = total > 0 ? Math.round(done / total * 100) : 0;
+    const status = (p.status || 'PAUSED').toLowerCase();
+    const isSelected = p.id === state.selectedPlanId;
+
+    return `
+      <div class="plan-item ${status} ${isSelected ? 'active' : ''}" data-id="${p.id}">
+        <div class="plan-item-name">${escHtml(p.name || p.id)}</div>
+        <div class="plan-item-meta">
+          <span class="badge badge-${status}">${p.status}</span>
+          <span>${done}/${total}</span>
+        </div>
+        <div class="plan-progress-bar">
+          <div class="plan-progress-fill" style="width:${pct}%"></div>
+        </div>
+      </div>`;
+  }).join('');
+
+  // Bind click
+  container.querySelectorAll('.plan-item').forEach(el => {
+    el.addEventListener('click', async () => {
+      const id = el.dataset.id;
+      state.selectedPlanId = id;
+      // Update sidebar selection visually
+      container.querySelectorAll('.plan-item').forEach(e => e.classList.remove('active'));
+      el.classList.add('active');
+      await renderPanelFor(id);
+    });
+  });
+}
+
+// ── Panel ──────────────────────────────────────────────────────────────────
+async function renderPanelFor(planId) {
+  const plan = await api.getTrack(planId);
+  if (!plan) return;
+
+  state._lastPlan = plan;
+  renderPlanHeader(plan);
+  renderTabContent(plan, state.activeTab);
+}
+
+function renderEmptyPanel() {
+  $id('plan-header').innerHTML = '<div class="empty-state" style="padding:32px">No track selected</div>';
+  $id('tab-tasks').innerHTML = '';
+  $id('tab-spec').innerHTML = '';
+  $id('tab-sessions').innerHTML = '';
+}
+
+function renderPlanHeader(plan) {
+  const stats = plan.stats || {};
+  const done = stats.DONE || 0;
+  const total = stats.total || 0;
+  const phase = plan.phase || 'spec';
+  const status = (plan.status || '').toLowerCase();
+  const pct = total > 0 ? Math.round(done / total * 100) : 0;
+
+  $id('plan-header').innerHTML = `
+    <div class="plan-header-title">${escHtml(plan.name || plan.id)}</div>
+    <div class="plan-header-meta">
+      <span class="badge badge-${status}">${plan.status || ''}</span>
+      <span class="phase-tag phase-${phase}">${phase.toUpperCase()}</span>
+      <span>${done}/${total} tasks</span>
+      <span style="flex:1;max-width:160px">
+        <div class="plan-progress-bar" style="margin:0">
+          <div class="plan-progress-fill" style="width:${pct}%"></div>
+        </div>
+      </span>
+      ${plan.status !== 'ACTIVE' && plan.status !== 'DONE' ? `<button class="btn-ghost btn-sm" onclick="switchToPlan('${plan.id}')">Activate</button>` : ''}
+      ${plan.status === 'ACTIVE' ? `<button class="btn-ghost btn-sm btn-danger-ghost" onclick="confirmDoneTrack('${plan.id}')">✓ Track done</button>` : ''}
+    </div>`;
+}
+
+async function renderTabContent(plan, tab) {
+  switch (tab) {
+    case 'tasks': renderTasks(plan); break;
+    case 'spec': await renderSpec(plan.id); break;
+    case 'sessions': renderSessions(plan); break;
+    case 'output': renderOutputPane(); break;
+  }
+}
+
+// ── Tasks tab ──────────────────────────────────────────────────────────────
+const TASK_ICONS = { DONE: '✓', IN_PROGRESS: '▶', TODO: '·', BLOCKED: '✗' };
+const TASK_LABELS = { IN_PROGRESS: 'IN PROGRESS', BLOCKED: 'BLOCKED' };
+
+function renderTasks(plan) {
+  const phases = plan.phases || [];
+  const usePhases = phases.length > 1 || (phases.length === 1 && phases[0].name);
+
+  if (usePhases) {
+    renderTasksWithPhases(plan, phases);
+    return;
+  }
+
+  const allTasks = plan.tasks || [];
+  const stats = plan.stats || {};
+  const planId = plan.id;
+  const pane = $id('tab-tasks');
+
+  if (allTasks.length === 0) {
+    pane.innerHTML = `
+      <div class="empty-state">
+        No tasks yet.<br>
+        <button class="btn-primary" style="margin-top:12px" onclick="generatePhases('${planId}')">⚡ Generate phases &amp; tasks</button>
+        <button class="btn-ghost btn-sm" style="margin-top:8px;display:block" onclick="refineAndGenerate('${planId}')">⚡ Generate tasks (no phases)</button>
+      </div>`;
+    return;
+  }
+
+  // Reset UI selected task if it belongs to a different plan
+  if (state.uiSelectedTaskId && !allTasks.find(t => t.id === state.uiSelectedTaskId)) {
+    state.uiSelectedTaskId = null;
+  }
+
+  // Reset obsolete filter values
+  if (state.taskFilter === 'SELECTED') state.taskFilter = 'all';
+  const filtered = state.taskFilter === 'all'
+    ? allTasks
+    : allTasks.filter(t => (t.status || 'TODO') === state.taskFilter);
+
+  const uiSel = state.uiSelectedTaskId;
+  const uiTask = uiSel ? allTasks.find(t => t.id === uiSel) : null;
+  const uiDone = uiTask && uiTask.status === 'DONE';
+
+  const taskRows = filtered.map(t => {
+    const status = t.status || 'TODO';
+    const icon = TASK_ICONS[status] || '·';
+    const isUiSelected = t.id === uiSel;
+    const rowClass = `task-item${isUiSelected ? ' ui-selected' : ''}`;
+    const titleClass = status === 'DONE' ? 'done' : status === 'IN_PROGRESS' ? 'active' : '';
+    const label = TASK_LABELS[status];
+    const badge = label ? `<span class="task-badge task-badge-${status.toLowerCase()}">${label}</span>` : '';
+
+    return `
+      <div class="${rowClass}" data-task-id="${t.id}" data-plan-id="${planId}">
+        <div class="task-icon ${status.toLowerCase()}">${icon}</div>
+        <div class="task-body">
+          <div class="task-title ${titleClass}">${escHtml(t.title || '')}</div>
+          ${t.description ? `<div class="task-desc">${escHtml(t.description)}</div>` : ''}
+          ${t.blocked_reason ? `<div class="task-desc blocked-reason">↳ ${escHtml(t.blocked_reason)}</div>` : ''}
+        </div>
+        ${badge}
+      </div>`;
+  }).join('');
+
+  // Filter buttons
+  const filters = [
+    ['all', 'Toutes', stats.total || 0],
+    ['TODO', 'Todo', stats.TODO || 0],
+    ['IN_PROGRESS', 'In progress', stats.IN_PROGRESS || 0],
+    ['DONE', 'Done', stats.DONE || 0],
+  ];
+  const filterBar = filters.map(([val, label, count]) =>
+    `<button class="filter-btn ${state.taskFilter === val ? 'active' : ''}" data-filter="${val}">${label} <span class="filter-count">${count}</span></button>`
+  ).join('');
+
+  // Action toolbar — active based on UI selected task
+  const isActive = plan.status === 'ACTIVE';
+  const noSel = !uiSel;
+  const dis = (noSel || !isActive) ? ' disabled' : '';
+  const disLlm = (!isActive) ? ' disabled' : dis;
+  const actionBar = `
+    <div class="task-action-bar">
+      <button class="task-action-btn btn-run" title="${isActive ? 'Run task' : 'Only available on active track'}"${disLlm} onclick="uiRunTask()">▶ Run</button>
+      <button class="task-action-btn btn-edit" title="Edit"${dis} onclick="uiEditTask()">✎ Edit</button>
+      <button class="task-action-btn btn-done" title="Mark done"${noSel || uiDone || !isActive ? ' disabled' : ''} onclick="uiDoneTask()">✓ Done</button>
+      <button class="task-action-btn btn-block" title="Block"${noSel || uiDone || !isActive ? ' disabled' : ''} onclick="uiBlockTask()">✗ Block</button>
+      <button class="task-action-btn btn-review" title="${isActive ? 'Review' : 'Only available on active track'}"${disLlm} onclick="uiReviewTask()">⊙ Review</button>
+      <button class="task-action-btn btn-add" title="Add task" onclick="openAddTaskModal('${planId}')">+ Add</button>
+    </div>`;
+
+  pane.innerHTML = `
+    <div class="tasks-toolbar">
+      <div class="filter-bar">${filterBar}</div>
+      ${actionBar}
+    </div>
+    <div class="tasks-list">${taskRows || '<div class="empty-state" style="padding:20px 0">No tasks match this filter.</div>'}</div>`;
+
+  // Filter buttons
+  pane.querySelectorAll('.filter-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.taskFilter = btn.dataset.filter;
+      renderTasks(plan);
+    });
+  });
+
+  // Clickable rows
+  pane.querySelectorAll('.task-item').forEach(row => {
+    row.addEventListener('click', () => {
+      const tid = row.dataset.taskId;
+      state.uiSelectedTaskId = state.uiSelectedTaskId === tid ? null : tid;
+      renderTasks(plan);
+    });
+  });
+}
+
+// ── Phase-grouped tasks rendering ────────────────────────────────────────────
+function renderTasksWithPhases(plan, phases) {
+  const planId = plan.id;
+  const pane = $id('tab-tasks');
+  const uiSel = state.uiSelectedTaskId;
+
+  // Global action bar (uses selected task regardless of phase)
+  const isActive = plan.status === 'ACTIVE';
+  const uiTask = uiSel ? (plan.tasks || []).find(t => t.id === uiSel) : null;
+  const noSel = !uiSel;
+  const uiDone = uiTask && uiTask.status === 'DONE';
+  const dis = (noSel || !isActive) ? ' disabled' : '';
+  const disLlm = (!isActive) ? ' disabled' : dis;
+
+  const actionBar = `
+    <div class="task-action-bar">
+      <button class="task-action-btn btn-run" title="${isActive ? 'Run task' : 'Only available on active track'}"${disLlm} onclick="uiRunTask()">▶ Run</button>
+      <button class="task-action-btn btn-edit" title="Edit"${dis} onclick="uiEditTask()">✎ Edit</button>
+      <button class="task-action-btn btn-done" title="Mark done"${noSel || uiDone || !isActive ? ' disabled' : ''} onclick="uiDoneTask()">✓ Done</button>
+      <button class="task-action-btn btn-block" title="Block"${noSel || uiDone || !isActive ? ' disabled' : ''} onclick="uiBlockTask()">✗ Block</button>
+      <button class="task-action-btn btn-review" title="${isActive ? 'Review' : 'Only available on active track'}"${disLlm} onclick="uiReviewTask()">⊙ Review</button>
+    </div>`;
+
+  const phaseSections = phases.map(ph => {
+    const phStatus = ph.status || 'TODO';
+    const isLocked = phStatus === 'LOCKED';
+    const phStats = ph.stats || {};
+    const phDone = phStats.DONE || 0;
+    const phTotal = phStats.total || 0;
+    const pct = phTotal > 0 ? Math.round(phDone / phTotal * 100) : 0;
+    const phaseTasks = ph.tasks || [];
+
+    const lockIcon = isLocked ? '🔒' : (phStatus === 'DONE' ? '✓' : '🔓');
+    const depNames = (ph.depends_on || []).map(depId => {
+      const dep = phases.find(p => p.id === depId);
+      return dep ? dep.name : depId;
+    }).join(', ');
+
+    const taskRows = phaseTasks.map(t => {
+      const status = t.status || 'TODO';
+      const icon = TASK_ICONS[status] || '·';
+      const isUiSelected = t.id === uiSel;
+      const titleClass = status === 'DONE' ? 'done' : status === 'IN_PROGRESS' ? 'active' : '';
+      const label = TASK_LABELS[status];
+      const badge = label ? `<span class="task-badge task-badge-${status.toLowerCase()}">${label}</span>` : '';
+      return `
+        <div class="task-item${isUiSelected ? ' ui-selected' : ''}${isLocked ? ' task-locked' : ''}" data-task-id="${t.id}" data-plan-id="${planId}">
+          <div class="task-icon ${status.toLowerCase()}">${icon}</div>
+          <div class="task-body">
+            <div class="task-title ${titleClass}">${escHtml(t.title || '')}</div>
+            ${t.description ? `<div class="task-desc">${escHtml(t.description)}</div>` : ''}
+          </div>
+          ${badge}
+        </div>`;
+    }).join('');
+
+    const emptyState = phaseTasks.length === 0
+      ? `<div class="phase-empty">No tasks yet. <button class="btn-ghost btn-sm" onclick="generateTasksForPhase('${planId}','${ph.id}')">⚡ Generate</button></div>`
+      : '';
+
+    return `
+      <div class="phase-section ${isLocked ? 'phase-locked' : ''}" data-phase-id="${ph.id}">
+        <div class="phase-header">
+          <span class="phase-lock-icon">${lockIcon}</span>
+          <span class="phase-name">${escHtml(ph.name)}</span>
+          <span class="phase-badge phase-badge-${phStatus.toLowerCase()}">${phStatus}</span>
+          ${isLocked && depNames ? `<span class="phase-dep-info">← needs: ${escHtml(depNames)}</span>` : ''}
+          <span class="phase-progress-wrap">
+            <span class="phase-task-count">${phDone}/${phTotal}</span>
+            <div class="phase-progress-bar"><div class="phase-progress-fill" style="width:${pct}%"></div></div>
+          </span>
+          <span class="phase-actions">
+            ${!isLocked && phaseTasks.length === 0 ? `<button class="btn-ghost btn-sm" onclick="generateTasksForPhase('${planId}','${ph.id}')">⚡ Tasks</button>` : ''}
+          </span>
+        </div>
+        <div class="phase-tasks${isLocked ? ' phase-tasks-locked' : ''}">
+          ${taskRows || emptyState}
+        </div>
+      </div>`;
+  }).join('');
+
+  const toolbar = `
+    <div class="tasks-toolbar" style="margin-bottom:8px">
+      ${actionBar}
+      <button class="btn-ghost btn-sm" onclick="openAddTaskModal('${planId}')" title="Add task">+ Add</button>
+      <button class="btn-ghost btn-sm" onclick="openNewPhaseModal('${planId}')" title="Add phase">+ Phase</button>
+      <button class="btn-ghost btn-sm" onclick="generatePhases('${planId}')" title="Generate phases from spec">⚡ Phases</button>
+    </div>`;
+
+  pane.innerHTML = toolbar + `<div class="phase-list">${phaseSections}</div>`;
+
+  // Bind task clicks
+  pane.querySelectorAll('.task-item:not(.task-locked)').forEach(row => {
+    row.addEventListener('click', () => {
+      const tid = row.dataset.taskId;
+      state.uiSelectedTaskId = state.uiSelectedTaskId === tid ? null : tid;
+      renderTasksWithPhases(plan, phases);
+    });
+  });
+}
+
+// ── Phase generation ─────────────────────────────────────────────────────────
+function generatePhases(planId) {
+  state.outputText = '';
+  state.outputRunning = true;
+  _switchToOutputTab();
+  _setOutputHeader('▶ Generating phases…', true);
+  renderOutputPane();
+
+  _startStream(`/api/tracks/${planId}/phases/generate`, {
+    onMeta: (t) => { _setOutputHeader('▶ ' + t, true); },
+    onText: _appendOutput,
+    onDone: () => { state.outputRunning = false; renderOutputPane(); refresh(); },
+    onError: () => { state.outputRunning = false; _appendOutput('\n⚠ Connection error'); renderOutputPane(); },
+  });
+}
+
+function generateTasksForPhase(planId, phaseId) {
+  state.outputText = '';
+  state.outputRunning = true;
+  _switchToOutputTab();
+  _setOutputHeader('▶ Generating tasks for phase…', true);
+  renderOutputPane();
+
+  _startStream(`/api/tracks/${planId}/phases/${phaseId}/tasks/generate`, {
+    onMeta: (t) => { _setOutputHeader('▶ ' + t, true); },
+    onText: _appendOutput,
+    onDone: () => { state.outputRunning = false; renderOutputPane(); renderPanelFor(planId); },
+    onError: () => { state.outputRunning = false; _appendOutput('\n⚠ Connection error'); renderOutputPane(); },
+  });
+}
+
+// ── New phase modal ──────────────────────────────────────────────────────────
+function openNewPhaseModal(planId) {
+  state.newPhasePlanId = planId;
+  $id('modal-phase-name').value = '';
+  $id('modal-phase-desc').value = '';
+  $id('modal-phase-overlay').classList.remove('hidden');
+  setTimeout(() => $id('modal-phase-name').focus(), 50);
+}
+
+function closePhaseModal() {
+  $id('modal-phase-overlay').classList.add('hidden');
+  state.newPhasePlanId = null;
+}
+
+async function confirmNewPhase() {
+  const name = $id('modal-phase-name').value.trim();
+  if (!name || !state.newPhasePlanId) return;
+  const desc = $id('modal-phase-desc').value.trim();
+  const planId = state.newPhasePlanId;
+  closePhaseModal();
+  await api.createPhase(planId, name, desc);
+  await renderPanelFor(planId);
+}
+
+// ── Spec tab ───────────────────────────────────────────────────────────────
+async function renderSpec(planId) {
+  const pane = $id('tab-spec');
+  pane.innerHTML = '<div class="empty-state">Loading...</div>';
+  const data = await api.getTrackSpec(planId);
+  if (!data || !data.content) {
+    pane.innerHTML = '<div class="empty-state">No spec yet. Run <code>arche spec</code>.</div>';
+    return;
+  }
+  pane.innerHTML = `
+    <div class="spec-toolbar">
+      <button class="btn-primary btn-sm" onclick="refineSpec('${planId}')">✦ Refine spec</button>
+      <button class="btn-ghost btn-sm" onclick="generateTasks('${planId}')">⚡ Generate tasks</button>
+    </div>
+    <pre class="spec-content">${escHtml(data.content)}</pre>`;
+}
+
+// ── Sessions tab ───────────────────────────────────────────────────────────
+function renderSessions(plan) {
+  const sessions = plan.sessions || [];
+  const pane = $id('tab-sessions');
+
+  if (sessions.length === 0) {
+    pane.innerHTML = '<div class="empty-state">No sessions yet.</div>';
+    return;
+  }
+
+  const items = sessions.map(date => `
+    <div class="session-item">
+      <div class="session-item-header" onclick="toggleSession(this, '${plan.id}', '${date}')">
+        <span>📅 ${date}</span>
+        <span>▸</span>
+      </div>
+      <div class="session-item-content" data-plan="${plan.id}" data-date="${date}">
+        Loading...
+      </div>
+    </div>`).join('');
+
+  pane.innerHTML = `<div class="session-list">${items}</div>`;
+}
+
+async function toggleSession(headerEl, planId, date) {
+  const content = headerEl.nextElementSibling;
+  const isOpen = content.classList.contains('open');
+
+  if (!isOpen) {
+    const data = await api.getSession(planId, date);
+    content.textContent = data ? data.content : '(empty)';
+    content.classList.add('open');
+    headerEl.querySelector('span:last-child').textContent = '▾';
+  } else {
+    content.classList.remove('open');
+    headerEl.querySelector('span:last-child').textContent = '▸';
+  }
+}
+
+// ── UI task actions (action bar) ────────────────────────────────────────────
+function _getUiTask() {
+  const plan = state._lastPlan;
+  if (!plan || !state.uiSelectedTaskId) return null;
+  return (plan.tasks || []).find(t => t.id === state.uiSelectedTaskId) || null;
+}
+
+function uiRunTask() {
+  const t = _getUiTask();
+  if (t) openRunModal(state.selectedPlanId, t.id, t.title);
+}
+
+async function uiSelectTask() {
+  const t = _getUiTask();
+  if (!t || t.status === 'DONE') return;
+  await api.selectTask(state.selectedPlanId, t.id);
+  await renderPanelFor(state.selectedPlanId);
+  await refreshSidebar();
+}
+
+function uiEditTask() {
+  const t = _getUiTask();
+  if (t) openEditTask(state.selectedPlanId, t.id);
+}
+
+function uiDoneTask() {
+  const t = _getUiTask();
+  if (t && t.status !== 'DONE') openDoneModal(state.selectedPlanId, t.id, t.title);
+}
+
+function uiBlockTask() {
+  const t = _getUiTask();
+  if (!t || t.status === 'DONE') return;
+  openBlockModal(state.selectedPlanId, t.id, t.title);
+}
+
+// ── Legacy actions ───────────────────────────────────────────────────────────
+async function markTaskDone(planId, taskId) {
+  await api.doneTask(planId, taskId);
+  await renderPanelFor(planId);
+  await refreshSidebar();
+}
+
+async function markTaskBlocked(planId, taskId) {
+  const reason = prompt('Reason for blocking:');
+  if (!reason) return;
+  await api.blockTask(planId, taskId, reason);
+  await renderPanelFor(planId);
+}
+
+async function switchCurrentTask(planId, taskId) {
+  await api.selectTask(planId, taskId);
+  await renderPanelFor(planId);
+  await refreshSidebar();
+}
+
+// ── Run task modal ──────────────────────────────────────────────────────────
+function openRunModal(trackId, taskId, taskTitle) {
+  state.runTask = { trackId, taskId };
+  $id('run-task-title').textContent = taskTitle;
+  $id('run-task-comment').value = '';
+  $id('modal-run-overlay').classList.remove('hidden');
+  setTimeout(() => $id('run-task-comment').focus(), 50);
+}
+
+function closeRunModal() {
+  $id('modal-run-overlay').classList.add('hidden');
+  state.runTask = null;
+}
+
+function confirmRunTask() {
+  if (!state.runTask) return;
+  const { trackId, taskId } = state.runTask;
+  const comment = $id('run-task-comment').value.trim();
+  closeRunModal();
+  runTask(trackId, taskId, comment);
+}
+
+// ── Streaming helpers ───────────────────────────────────────────────────────
+function _switchToOutputTab() {
+  document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+  const outTab = document.querySelector('.tab[data-tab="output"]');
+  if (outTab) outTab.classList.add('active');
+  const outPane = $id('tab-output');
+  if (outPane) outPane.classList.add('active');
+  state.activeTab = 'output';
+}
+
+function _appendOutput(text) {
+  state.outputText += text;
+  const pre = $id('output-pre');
+  if (pre) {
+    pre.className = 'output-pre output-running';
+    pre.textContent = state.outputText;
+    pre.scrollTop = pre.scrollHeight;
+  }
+}
+
+/** Start an SSE stream (GET). Callbacks: onMeta, onText, onDone, onError, onSignal */
+function _startStream(url, { onMeta, onText, onDone, onError, onSignal } = {}) {
+  if (state.outputEventSource) {
+    state.outputEventSource.close();
+    state.outputEventSource = null;
+  }
+  const es = new EventSource(url);
+  state.outputEventSource = es;
+
+  es.onmessage = (evt) => {
+    const data = evt.data;
+    if (data === '__DONE__') {
+      es.close();
+      state.outputEventSource = null;
+      if (onDone) onDone();
+      return;
+    }
+    if (data.startsWith('__META__ ')) {
+      if (onMeta) onMeta(data.slice(9));
+      return;
+    }
+    if (/^__[A-Z_]+__$/.test(data)) {
+      if (onSignal) onSignal(data);
+      return;
+    }
+    if (onText) onText(stripAnsi(data));
+  };
+
+  es.onerror = () => {
+    es.close();
+    state.outputEventSource = null;
+    if (onError) onError();
+  };
+  return es;
+}
+
+/** Start an SSE stream over POST. Same callbacks as _startStream. */
+async function _startPostStream(url, body, { onMeta, onText, onDone, onError, onSignal } = {}) {
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) { if (onError) onError(); return; }
+
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    let finished = false;
+
+    while (!finished) {
+      const { done: streamDone, value } = await reader.read();
+      if (streamDone) break;
+
+      buf += dec.decode(value, { stream: true });
+
+      let boundary;
+      while ((boundary = buf.indexOf('\n\n')) !== -1) {
+        const msg = buf.slice(0, boundary);
+        buf = buf.slice(boundary + 2);
+        if (!msg.trim()) continue;
+
+        const dataLines = msg.split('\n').filter(l => l.startsWith('data: ')).map(l => l.slice(6));
+        if (dataLines.length === 0) continue;
+        const data = dataLines.join('\n');
+
+        if (data === '__DONE__') { finished = true; if (onDone) onDone(); break; }
+        if (data.startsWith('__META__ ')) { if (onMeta) onMeta(data.slice(9)); continue; }
+        if (/^__[A-Z_]+__$/.test(data)) { if (onSignal) onSignal(data); continue; }
+        if (onText) onText(stripAnsi(data));
+      }
+    }
+  } catch (e) {
+    if (onError) onError();
+  }
+}
+
+// ── Run task / Output tab ───────────────────────────────────────────────────
+function _setOutputHeader(text, running = false) {
+  const header = $id('output-header');
+  if (!header) return;
+  header.innerHTML = running
+    ? `<span class="output-spinner"></span><span>${escHtml(text)}</span>`
+    : `<span>${escHtml(text)}</span>`;
+}
+
+function runTask(planId, taskId, comment = '') {
+  if (state.outputEventSource) {
+    state.outputEventSource.close();
+    state.outputEventSource = null;
+  }
+
+  state.outputText = '';
+  state.outputRunning = true;
+  state._outputMeta = '';
+  state._outputDone = false;
+
+  _switchToOutputTab();
+  _setOutputHeader('Connecting…', true);
+  const pre = $id('output-pre');
+  if (pre) { pre.textContent = ''; pre.className = 'output-pre output-running'; }
+
+  const url = comment
+    ? `/api/tracks/${planId}/tasks/${taskId}/run?comment=${encodeURIComponent(comment)}`
+    : `/api/tracks/${planId}/tasks/${taskId}/run`;
+  const es = new EventSource(url);
+  state.outputEventSource = es;
+
+  es.onmessage = (evt) => {
+    const data = evt.data;
+    if (data === '__DONE__') {
+      es.close();
+      state.outputEventSource = null;
+      state.outputRunning = false;
+      state._outputDone = true;
+      _setOutputHeader(`✓ Done — ${state._outputMeta}`, false);
+      if (pre) { pre.className = 'output-pre'; pre.scrollTop = pre.scrollHeight; }
+      refresh();
+      return;
+    }
+    if (data.startsWith('__META__ ')) {
+      state._outputMeta = data.slice(9);
+      _setOutputHeader(`▶ ${state._outputMeta}`, true);
+      return;
+    }
+    const chunk = stripAnsi(data);
+    state.outputText += chunk;
+    if (pre) {
+      pre.textContent = state.outputText;
+      pre.scrollTop = pre.scrollHeight;
+    }
+  };
+
+  es.onerror = () => {
+    es.close();
+    state.outputEventSource = null;
+    state.outputRunning = false;
+    _setOutputHeader('⚠ Connection error — is the server running?', false);
+    if (pre) { pre.className = 'output-pre output-error'; }
+  };
+}
+
+function renderOutputPane() {
+  const header = $id('output-header');
+  const pre = $id('output-pre');
+  if (!header || !pre) return;
+
+  if (!state.outputRunning && !state._outputDone) {
+    header.innerHTML = '';
+    pre.textContent = 'Select a task and click ▶ Run.';
+    pre.className = 'output-pre output-empty';
+    return;
+  }
+  if (state.outputRunning) {
+    _setOutputHeader(state._outputMeta ? `▶ ${state._outputMeta}` : 'Running…', true);
+    pre.className = 'output-pre output-running';
+  } else {
+    _setOutputHeader(state._outputMeta ? `✓ Done — ${state._outputMeta}` : '✓ Done', false);
+    pre.className = 'output-pre';
+  }
+  pre.textContent = state.outputText || '';
+  pre.scrollTop = pre.scrollHeight;
+}
+
+// ── Edit task modal ─────────────────────────────────────────────────────────
+function openEditTask(planId, taskId) {
+  const plan = state.plans.find(p => p.id === planId);
+  const tasks = plan ? (plan.tasks || []) : [];
+  let task = tasks.find(t => t.id === taskId);
+  if (!task) {
+    // Try fetching from already loaded panel data
+    const panelPlan = state._lastPlan;
+    task = panelPlan && (panelPlan.tasks || []).find(t => t.id === taskId);
+  }
+  if (!task) return;
+
+  state.editingTask = { planId, task };
+  $id('edit-task-title').value = task.title || '';
+  $id('edit-task-desc').value = task.description || '';
+  $id('edit-task-notes').value = task.notes || '';
+  $id('modal-edit-overlay').classList.remove('hidden');
+  $id('edit-task-title').focus();
+}
+
+function closeEditModal() {
+  $id('modal-edit-overlay').classList.add('hidden');
+  state.editingTask = null;
+}
+
+async function saveEditTask() {
+  if (!state.editingTask) return;
+  const { planId, task } = state.editingTask;
+  const updates = {
+    title: $id('edit-task-title').value.trim(),
+    description: $id('edit-task-desc').value.trim(),
+    notes: $id('edit-task-notes').value.trim(),
+  };
+  closeEditModal();
+  await api.updateTask(planId, task.id, updates);
+  await renderPanelFor(planId);
+}
+
+// ── Complete task modal ─────────────────────────────────────────────────────
+function openDoneModal(planId, taskId, title) {
+  state.doneTask = { planId, taskId };
+  $id('done-task-title').textContent = title;
+  $id('done-task-notes').value = '';
+  $id('modal-done-overlay').classList.remove('hidden');
+  $id('done-task-notes').focus();
+}
+
+function closeDoneModal() {
+  $id('modal-done-overlay').classList.add('hidden');
+  state.doneTask = null;
+}
+
+async function confirmDoneTask() {
+  if (!state.doneTask) return;
+  const { planId, taskId } = state.doneTask;
+  const notes = $id('done-task-notes').value.trim();
+  closeDoneModal();
+  const result = await api.doneTask(planId, taskId, notes);
+  if (!result || result.message) {
+    showToast(result && result.message ? result.message : 'Failed to mark task done');
+  }
+  await renderPanelFor(planId);
+  await refreshSidebar();
+}
+
+// ── Block task modal ─────────────────────────────────────────────────────────
+function openBlockModal(planId, taskId, title) {
+  state.blockTask = { planId, taskId };
+  $id('block-task-title').textContent = title;
+  $id('block-task-reason').value = '';
+  $id('modal-block-overlay').classList.remove('hidden');
+  $id('block-task-reason').focus();
+}
+
+function closeBlockModal() {
+  $id('modal-block-overlay').classList.add('hidden');
+  state.blockTask = null;
+}
+
+async function confirmBlockTask() {
+  if (!state.blockTask) return;
+  const reason = $id('block-task-reason').value.trim();
+  if (!reason) { $id('block-task-reason').focus(); return; }
+  const { planId, taskId } = state.blockTask;
+  closeBlockModal();
+  const result = await api.blockTask(planId, taskId, reason);
+  if (!result || result.message) {
+    showToast(result && result.message ? result.message : 'Failed to block task');
+  }
+  await renderPanelFor(planId);
+  await refreshSidebar();
+}
+
+async function switchToPlan(planId) {
+  await api.switchTrack(planId);
+  state.selectedPlanId = planId;
+  await refresh();
+}
+
+async function refreshSidebar() {
+  const plans = await api.getTracks();
+  if (plans) {
+    state.plans = plans;
+    renderSidebar(plans);
+  }
+}
+
+// ── Tabs ───────────────────────────────────────────────────────────────────
+function setupTabs() {
+  document.querySelectorAll('.tab').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+      btn.classList.add('active');
+
+      const tab = btn.dataset.tab;
+      state.activeTab = tab;
+      $id(`tab-${tab}`).classList.add('active');
+
+      if (state.selectedPlanId) {
+        const plan = await api.getTrack(state.selectedPlanId);
+        if (plan) await renderTabContent(plan, tab);
+      }
+    });
+  });
+}
+
+// ── Terminal management ────────────────────────────────────────────────────
+const TERM_OPTS = {
+  theme: { background: '#0d0d0d', foreground: '#e0e0e0', cursor: '#39c5cf', selection: '#2a4a5a' },
+  fontSize: 12,
+  fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+  cursorBlink: true,
+  allowTransparency: true,
+  scrollback: 1000,
+};
+
+function setupTerminal() {
+  addTerminal();
+  // Observe container size changes to fit active terminal
+  const resizeObserver = new ResizeObserver(() => _fitActive());
+  resizeObserver.observe($id('terminal-container'));
+}
+
+function addTerminal() {
+  _termCounter++;
+  const id = `t${_termCounter}`;
+
+  // Create pane div inside the shared container
+  const pane = document.createElement('div');
+  pane.className = 'terminal-pane';
+  pane.id = `term-pane-${id}`;
+  $id('terminal-container').appendChild(pane);
+
+  const term = new Terminal(TERM_OPTS);
+  const fitAddon = new FitAddon.FitAddon();
+  term.loadAddon(fitAddon);
+  term.open(pane);
+
+  const ws = _connectTerminalWs(id, term, fitAddon);
+  const entry = { id, term, fitAddon, ws, pane };
+  state.terminals.push(entry);
+
+  selectTerminal(id);
+  renderTerminalTabs();
+  return entry;
+}
+
+function removeTerminal(id) {
+  if (state.terminals.length <= 1) return; // minimum 1
+  const idx = state.terminals.findIndex(t => t.id === id);
+  if (idx === -1) return;
+
+  const entry = state.terminals[idx];
+  try { if (entry.ws.readyState === WebSocket.OPEN) entry.ws.close(); } catch (_) {}
+  try { entry.term.dispose(); } catch (_) {}
+  entry.pane.remove();
+  state.terminals.splice(idx, 1);
+
+  if (state.activeTerminalId === id) {
+    const next = state.terminals[Math.min(idx, state.terminals.length - 1)];
+    selectTerminal(next.id);
+  } else {
+    renderTerminalTabs();
+  }
+}
+
+function selectTerminal(id) {
+  state.activeTerminalId = id;
+  state.terminals.forEach(t => { t.pane.style.display = t.id === id ? '' : 'none'; });
+  renderTerminalTabs();
+  if (!state.consoleCollapsed) setTimeout(() => _fitActive(), 30);
+}
+
+function renderTerminalTabs() {
+  const tabs = $id('terminal-tabs');
+  const canClose = state.terminals.length > 1;
+  tabs.innerHTML = state.terminals.map(t => `
+    <button class="term-tab ${t.id === state.activeTerminalId ? 'active' : ''}"
+            onclick="selectTerminal('${t.id}')">
+      Term&nbsp;${t.id.slice(1)}
+      ${canClose ? `<span class="term-tab-close" onclick="event.stopPropagation();removeTerminal('${t.id}')">×</span>` : ''}
+    </button>`).join('');
+}
+
+function _fitActive() {
+  const entry = state.terminals.find(t => t.id === state.activeTerminalId);
+  if (entry) try { entry.fitAddon.fit(); } catch (_) {}
+}
+
+function _updateStatus(cls) {
+  const el = $id('console-status');
+  if (el) el.className = `console-status ${cls}`;
+}
+
+function _connectTerminalWs(id, term, fitAddon) {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const ws = new WebSocket(`${proto}://${location.host}/ws/terminal`);
+  ws.binaryType = 'arraybuffer';
+
+  ws.onopen = () => {
+    if (id === state.activeTerminalId) _updateStatus('connected');
+    try { fitAddon.fit(); } catch (_) {}
+  };
+  ws.onmessage = (evt) => {
+    const data = evt.data instanceof ArrayBuffer ? new Uint8Array(evt.data) : evt.data;
+    term.write(data);
+  };
+  ws.onclose = () => {
+    if (id === state.activeTerminalId) _updateStatus('');
+    term.write('\r\n\x1b[33m[disconnected]\x1b[0m\r\n');
+  };
+  ws.onerror = () => {
+    if (id === state.activeTerminalId) _updateStatus('error');
+    term.write('\r\n\x1b[31m[ws error]\x1b[0m\r\n');
+  };
+  term.onData(data => {
+    if (ws.readyState === WebSocket.OPEN) ws.send(new TextEncoder().encode(data));
+  });
+
+  return ws;
+}
+
+// ── Event listeners ────────────────────────────────────────────────────────
+function setupEventListeners() {
+  setupTabs();
+
+  // New plan button
+  $id('btn-new-plan').addEventListener('click', () => {
+    $id('modal-overlay').classList.remove('hidden');
+    $id('modal-plan-name').focus();
+  });
+
+  // Modal cancel
+  $id('modal-cancel').addEventListener('click', closeModal);
+  $id('modal-overlay').addEventListener('click', (e) => {
+    if (e.target === $id('modal-overlay')) closeModal();
+  });
+
+  // Modal create
+  $id('modal-create').addEventListener('click', () => createPlan(true));
+  $id('modal-create-only').addEventListener('click', () => createPlan(false));
+  $id('modal-plan-name').addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeModal();
+  });
+
+  // Edit task modal
+  $id('edit-cancel').addEventListener('click', closeEditModal);
+  $id('modal-edit-overlay').addEventListener('click', (e) => { if (e.target === $id('modal-edit-overlay')) closeEditModal(); });
+  $id('edit-save').addEventListener('click', saveEditTask);
+  $id('edit-task-title').addEventListener('keydown', (e) => { if (e.key === 'Enter') saveEditTask(); if (e.key === 'Escape') closeEditModal(); });
+
+  // Done task modal
+  $id('done-cancel').addEventListener('click', closeDoneModal);
+  $id('modal-done-overlay').addEventListener('click', (e) => { if (e.target === $id('modal-done-overlay')) closeDoneModal(); });
+  $id('done-confirm').addEventListener('click', confirmDoneTask);
+  $id('done-task-notes').addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.ctrlKey) confirmDoneTask(); if (e.key === 'Escape') closeDoneModal(); });
+
+  // Block task modal
+  $id('block-cancel').addEventListener('click', closeBlockModal);
+  $id('modal-block-overlay').addEventListener('click', (e) => { if (e.target === $id('modal-block-overlay')) closeBlockModal(); });
+  $id('block-confirm').addEventListener('click', confirmBlockTask);
+  $id('block-task-reason').addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.ctrlKey) confirmBlockTask(); if (e.key === 'Escape') closeBlockModal(); });
+
+  // Run task modal
+  $id('run-cancel').addEventListener('click', closeRunModal);
+  $id('modal-run-overlay').addEventListener('click', (e) => { if (e.target === $id('modal-run-overlay')) closeRunModal(); });
+  $id('run-confirm').addEventListener('click', confirmRunTask);
+  $id('run-task-comment').addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.ctrlKey) confirmRunTask(); if (e.key === 'Escape') closeRunModal(); });
+
+  // Add task modal
+  $id('add-task-cancel').addEventListener('click', closeAddTaskModal);
+  $id('modal-add-task-overlay').addEventListener('click', (e) => { if (e.target === $id('modal-add-task-overlay')) closeAddTaskModal(); });
+  $id('add-task-confirm').addEventListener('click', confirmAddTask);
+  $id('add-task-title').addEventListener('keydown', (e) => { if (e.key === 'Enter') confirmAddTask(); if (e.key === 'Escape') closeAddTaskModal(); });
+
+  // Phase modal
+  $id('phase-cancel').addEventListener('click', closePhaseModal);
+  $id('modal-phase-overlay').addEventListener('click', (e) => { if (e.target === $id('modal-phase-overlay')) closePhaseModal(); });
+  $id('phase-create').addEventListener('click', confirmNewPhase);
+  $id('modal-phase-name').addEventListener('keydown', (e) => { if (e.key === 'Enter') confirmNewPhase(); if (e.key === 'Escape') closePhaseModal(); });
+
+  // Refresh button
+  $id('btn-web-refresh').addEventListener('click', refresh);
+
+  // Docs button
+  $id('btn-docs').addEventListener('click', () => $id('modal-docs-overlay').classList.remove('hidden'));
+  $id('docs-close').addEventListener('click', () => $id('modal-docs-overlay').classList.add('hidden'));
+  $id('modal-docs-overlay').addEventListener('click', (e) => {
+    if (e.target === $id('modal-docs-overlay')) $id('modal-docs-overlay').classList.add('hidden');
+  });
+
+  // New terminal button
+  $id('btn-add-terminal').addEventListener('click', () => {
+    if (state.consoleCollapsed) {
+      const wrapper = $id('console-wrapper');
+      wrapper.classList.remove('collapsed');
+      state.consoleCollapsed = false;
+      $id('btn-console-toggle').textContent = '−';
+    }
+    addTerminal();
+  });
+
+  // Console toggle
+  $id('btn-console-toggle').addEventListener('click', () => {
+    const wrapper = $id('console-wrapper');
+    const btn = $id('btn-console-toggle');
+    state.consoleCollapsed = !state.consoleCollapsed;
+    wrapper.classList.toggle('collapsed', state.consoleCollapsed);
+    btn.textContent = state.consoleCollapsed ? '+' : '−';
+    if (!state.consoleCollapsed) setTimeout(() => _fitActive(), 50);
+  });
+}
+
+function closeModal() {
+  $id('modal-overlay').classList.add('hidden');
+  ['modal-plan-name','spec-goal','spec-context','spec-requirements','spec-constraints','spec-out-of-scope']
+    .forEach(id => { const el = $id(id); if (el) el.value = ''; });
+}
+
+function _buildSpec(name, goal, context, requirements, constraints, outOfScope) {
+  const parts = [`# Spec: ${name}\n`];
+  if (goal)        parts.push(`## Goal\n\n${goal}\n`);
+  if (context)     parts.push(`## Context\n\n${context}\n`);
+  if (requirements) parts.push(`## Requirements\n\n${requirements.split('\n').map(l => l.trim() ? `- ${l.trim()}` : '').filter(Boolean).join('\n')}\n`);
+  if (constraints) parts.push(`## Constraints\n\n${constraints}\n`);
+  if (outOfScope)  parts.push(`## Out of Scope\n\n${outOfScope}\n`);
+  parts.push('## Tasks\n\n_(To be generated by planner)_\n');
+  return parts.join('\n');
+}
+
+async function createPlan(withGenerate = false) {
+  const name = $id('modal-plan-name').value.trim();
+  if (!name) return;
+
+  const goal         = $id('spec-goal').value.trim();
+  const context      = $id('spec-context').value.trim();
+  const requirements = $id('spec-requirements').value.trim();
+  const constraints  = $id('spec-constraints').value.trim();
+  const outOfScope   = $id('spec-out-of-scope').value.trim();
+  const hasSpec = goal || requirements;
+
+  closeModal();
+  const plan = await api.createTrack(name);
+  if (!plan || !plan.id) { await refresh(); return; }
+
+  if (hasSpec) {
+    const spec = _buildSpec(name, goal, context, requirements, constraints, outOfScope);
+    await api.saveSpec(plan.id, spec);
+  }
+
+  state.selectedPlanId = plan.id;
+  await refresh();
+
+  // Navigate to Spec tab so user can review before generating tasks
+  if (hasSpec) {
+    _switchTab('spec');
+  }
+
+  if (withGenerate) {
+    if (hasSpec) {
+      refineAndGenerate(plan.id);
+    } else {
+      generateTasks(plan.id);
+    }
+  }
+}
+
+function _switchTab(tabName) {
+  document.querySelectorAll('.tab').forEach(b => {
+    b.classList.toggle('active', b.dataset.tab === tabName);
+  });
+  document.querySelectorAll('.tab-pane').forEach(p => {
+    p.classList.toggle('active', p.id === `tab-${tabName}`);
+  });
+  state.activeTab = tabName;
+  if (state.selectedPlanId) {
+    api.getTrack(state.selectedPlanId).then(plan => {
+      if (plan) renderTabContent(plan, tabName);
+    });
+  }
+}
+
+function generateTasks(planId) {
+  state.outputText = '';
+  state.outputRunning = true;
+  _switchToOutputTab();
+  _setOutputHeader('▶ Generating tasks…', true);
+  renderOutputPane();
+
+  _startStream(`/api/tracks/${planId}/tasks/generate`, {
+    onMeta: (t) => { _setOutputHeader('▶ ' + t, true); },
+    onText: _appendOutput,
+    onDone: () => { state.outputRunning = false; renderOutputPane(); refresh(); },
+    onError: () => { state.outputRunning = false; _appendOutput('\n⚠ Connection error'); renderOutputPane(); },
+  });
+}
+
+/** Rewrite spec with LLM, then navigate to Spec tab. */
+function refineSpec(planId) {
+  state.outputText = '';
+  state.outputRunning = true;
+  _switchToOutputTab();
+  _setOutputHeader('▶ Refining spec…', true);
+  renderOutputPane();
+
+  _startStream(`/api/tracks/${planId}/spec/refine`, {
+    onMeta: (t) => { _setOutputHeader('▶ ' + t, true); },
+    onText: _appendOutput,
+    onDone: () => {
+      state.outputRunning = false;
+      renderOutputPane();
+      _switchTab('spec');
+    },
+    onError: () => { state.outputRunning = false; _appendOutput('\n⚠ Connection error'); renderOutputPane(); },
+  });
+}
+
+/** Rewrite spec with LLM, then immediately generate tasks — single continuous output. */
+function refineAndGenerate(planId) {
+  state.outputText = '';
+  state.outputRunning = true;
+  _switchToOutputTab();
+  _setOutputHeader('▶ Refining spec…', true);
+  renderOutputPane();
+
+  _startStream(`/api/tracks/${planId}/spec/refine`, {
+    onMeta: (t) => { _setOutputHeader('▶ ' + t, true); },
+    onText: _appendOutput,
+    onDone: () => {
+      _appendOutput('\n\n────────────────────────────────────────\n');
+      _setOutputHeader('▶ Generating tasks…', true);
+      _startStream(`/api/tracks/${planId}/tasks/generate`, {
+        onMeta: (t) => { _setOutputHeader('▶ ' + t, true); },
+        onText: _appendOutput,
+        onDone: () => { state.outputRunning = false; renderOutputPane(); refresh(); },
+        onError: () => { state.outputRunning = false; _appendOutput('\n⚠ Error during task generation'); renderOutputPane(); },
+      });
+    },
+    onError: () => { state.outputRunning = false; _appendOutput('\n⚠ Error during spec refinement'); renderOutputPane(); },
+  });
+}
+
+// ── Spec interview ──────────────────────────────────────────────────────────
+function openInterviewStart(planId) {
+  _switchToOutputTab();
+  state.outputText = '';
+  state.outputRunning = false;
+  _setOutputHeader('✦ Spec Interview', true);
+  renderOutputPane();
+  $id('interview-start').classList.remove('hidden');
+  $id('interview-answer-panel').classList.add('hidden');
+  $id('review-actions').classList.add('hidden');
+  $id('interview-description').value = '';
+  setTimeout(() => $id('interview-description').focus(), 50);
+  state.interview = { planId, description: '', qa: [], currentQuestion: null };
+}
+
+function cancelInterviewStart() {
+  $id('interview-start').classList.add('hidden');
+  state.interview = null;
+}
+
+function startInterviewFromInput() {
+  const description = $id('interview-description').value.trim();
+  if (!description || !state.interview) return;
+  state.interview.description = description;
+  $id('interview-start').classList.add('hidden');
+  _runInterviewTurn(state.interview.planId, description, []);
+}
+
+async function _runInterviewTurn(planId, description, qa) {
+  const posBeforeTurn = state.outputText.length;
+  state.outputRunning = true;
+  renderOutputPane();
+
+  await _startPostStream(`/api/tracks/${planId}/spec/interview`, { description, qa }, {
+    onMeta: (t) => { _setOutputHeader('▶ ' + t, true); },
+    onText: _appendOutput,
+    onDone: () => { state.outputRunning = false; renderOutputPane(); },
+    onError: () => { state.outputRunning = false; _appendOutput('\n⚠ Connection error'); renderOutputPane(); },
+    onSignal: (sig) => {
+      if (sig === '__QUESTION__') {
+        const question = state.outputText.slice(posBeforeTurn).trim();
+        if (state.interview) state.interview.currentQuestion = question;
+        $id('interview-answer-panel').classList.remove('hidden');
+        $id('interview-answer').value = '';
+        setTimeout(() => $id('interview-answer').focus(), 50);
+      } else if (sig === '__SPEC_COMPLETE__') {
+        state.interview = null;
+        $id('interview-answer-panel').classList.add('hidden');
+        showToast('✓ Spec written!');
+        refresh().then(() => _switchTab('spec'));
+      }
+    },
+  });
+}
+
+async function submitInterviewAnswer() {
+  if (!state.interview) return;
+  const answer = $id('interview-answer').value.trim();
+  if (!answer) { $id('interview-answer').focus(); return; }
+  const q = state.interview.currentQuestion || '';
+  state.interview.qa.push({ q, a: answer });
+  $id('interview-answer-panel').classList.add('hidden');
+  _appendOutput(`\n\n→ ${answer}\n\n`);
+  await _runInterviewTurn(state.interview.planId, state.interview.description, state.interview.qa);
+}
+
+async function finishInterview() {
+  if (!state.interview) return;
+  const q = state.interview.currentQuestion || '';
+  state.interview.qa.push({ q, a: 'I have no more to add. Please write the spec with the information provided.' });
+  $id('interview-answer-panel').classList.add('hidden');
+  _appendOutput('\n\n→ [Write spec with available information]\n\n');
+  await _runInterviewTurn(state.interview.planId, state.interview.description, state.interview.qa);
+}
+
+// ── Code review ─────────────────────────────────────────────────────────────
+function uiReviewTask() {
+  const t = _getUiTask();
+  if (t) reviewTask(state.selectedPlanId, t.id);
+}
+
+function reviewTask(planId, taskId) {
+  state.outputText = '';
+  state.outputRunning = true;
+  state.reviewTask = { planId, taskId, verdict: null, issues: '' };
+  _switchToOutputTab();
+  _setOutputHeader('⊙ Reviewing…', true);
+  $id('review-actions').classList.add('hidden');
+  $id('interview-start').classList.add('hidden');
+  $id('interview-answer-panel').classList.add('hidden');
+  renderOutputPane();
+
+  _startStream(`/api/tracks/${planId}/tasks/${taskId}/review`, {
+    onMeta: (t) => { _setOutputHeader('⊙ ' + t, true); },
+    onText: _appendOutput,
+    onDone: () => { state.outputRunning = false; renderOutputPane(); },
+    onError: () => { state.outputRunning = false; _appendOutput('\n⚠ Connection error'); renderOutputPane(); },
+    onSignal: (sig) => {
+      if (sig === '__REVIEW_PASS__') {
+        if (state.reviewTask) state.reviewTask.verdict = 'PASS';
+        showToast('✓ Review passed!');
+      } else if (sig === '__REVIEW_FAIL__') {
+        if (state.reviewTask) {
+          state.reviewTask.verdict = 'FAIL';
+          state.reviewTask.issues = state.outputText.trim();
+        }
+        $id('review-actions').classList.remove('hidden');
+        showToast('✗ Review failed — create a rework task below');
+      }
+    },
+  });
+}
+
+async function createReworkTask() {
+  if (!state.reviewTask) return;
+  const { planId, taskId, issues } = state.reviewTask;
+  const task = await api.reworkTask(planId, taskId, issues);
+  if (task && task.id) {
+    $id('review-actions').classList.add('hidden');
+    state.reviewTask = null;
+    showToast('Rework task created');
+    await renderPanelFor(planId);
+    await refreshSidebar();
+  }
+}
+
+// ── Add task modal ───────────────────────────────────────────────────────────
+function openAddTaskModal(trackId) {
+  state.addTaskTrackId = trackId;
+  $id('add-task-title').value = '';
+  $id('modal-add-task-overlay').classList.remove('hidden');
+  setTimeout(() => $id('add-task-title').focus(), 50);
+}
+
+function closeAddTaskModal() {
+  $id('modal-add-task-overlay').classList.add('hidden');
+  state.addTaskTrackId = null;
+}
+
+async function confirmAddTask() {
+  const title = $id('add-task-title').value.trim();
+  if (!title || !state.addTaskTrackId) return;
+  const trackId = state.addTaskTrackId;
+  closeAddTaskModal();
+  const task = await api.addTask(trackId, title);
+  if (task && task.id) {
+    showToast(`✓ Task added: ${task.title}`);
+  }
+  await renderPanelFor(trackId);
+}
+
+// ── Track done ────────────────────────────────────────────────────────────────
+async function confirmDoneTrack(trackId) {
+  if (!confirm('Mark this track as done?')) return;
+  const track = await api.doneTrack(trackId);
+  if (track) {
+    showToast('✓ Track marked as done');
+    await refresh();
+  }
+}
+
+// ── Utils ──────────────────────────────────────────────────────────────────
+function stripAnsi(str) {
+  return str.replace(/\x1b\[[0-9;]*[mGKHF]/g, '').replace(/\r/g, '');
+}
+
+function showToast(msg, duration = 3500) {
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => el.classList.add('toast-in'), 10);
+  setTimeout(() => {
+    el.classList.remove('toast-in');
+    setTimeout(() => el.remove(), 300);
+  }, duration);
+}
+
+function escHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+// ── Resizable console ──────────────────────────────────────────────────────
+function setupResizableConsole() {
+  const handle = $id('console-resize-handle');
+  const wrapper = $id('console-wrapper');
+  if (!handle || !wrapper) return;
+
+  let dragging = false;
+  let startY = 0;
+  let startH = 0;
+
+  handle.addEventListener('mousedown', (e) => {
+    if (state.consoleCollapsed) return;
+    dragging = true;
+    startY = e.clientY;
+    startH = wrapper.getBoundingClientRect().height;
+    handle.classList.add('dragging');
+    document.body.style.userSelect = 'none';
+    e.preventDefault();
+  });
+
+  document.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    const delta = startY - e.clientY;  // drag up = taller
+    const minH = 80;
+    const maxH = Math.floor(window.innerHeight * 0.75);
+    const newH = Math.max(minH, Math.min(maxH, startH + delta));
+    // 5px handle + bar-h embedded; store just the terminal area height in --console-h
+    const barH = 34; // matches --console-bar-h
+    document.documentElement.style.setProperty('--console-h', `${newH - barH - 5}px`);
+    wrapper.style.height = `${newH}px`;
+    _fitActive();
+  });
+
+  document.addEventListener('mouseup', () => {
+    if (dragging) {
+      dragging = false;
+      handle.classList.remove('dragging');
+      document.body.style.userSelect = '';
+      _fitActive();
+    }
+  });
+}
+
+// ── Boot ───────────────────────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', init);
+
+// Expose for inline handlers
+window.markTaskDone = markTaskDone;
+window.markTaskBlocked = markTaskBlocked;
+window.switchToPlan = switchToPlan;
+window.toggleSession = toggleSession;
+window.runTask = runTask;
+window.switchCurrentTask = switchCurrentTask;
+window.openEditTask = openEditTask;
+window.openDoneModal = openDoneModal;
+window.selectTerminal = selectTerminal;
+window.removeTerminal = removeTerminal;
+window.uiRunTask = uiRunTask;
+window.uiSelectTask = uiSelectTask;
+window.uiEditTask = uiEditTask;
+window.uiDoneTask = uiDoneTask;
+window.uiBlockTask = uiBlockTask;
+window.openBlockModal = openBlockModal;
+window.closeBlockModal = closeBlockModal;
+window.confirmBlockTask = confirmBlockTask;
+window.generateTasks = generateTasks;
+window.refineSpec = refineSpec;
+window.refineAndGenerate = refineAndGenerate;
+window.generatePhases = generatePhases;
+window.generateTasksForPhase = generateTasksForPhase;
+window.openNewPhaseModal = openNewPhaseModal;
+window.closePhaseModal = closePhaseModal;
+window.confirmNewPhase = confirmNewPhase;
+window.openInterviewStart = openInterviewStart;
+window.cancelInterviewStart = cancelInterviewStart;
+window.startInterviewFromInput = startInterviewFromInput;
+window.submitInterviewAnswer = submitInterviewAnswer;
+window.finishInterview = finishInterview;
+window.uiReviewTask = uiReviewTask;
+window.reviewTask = reviewTask;
+window.createReworkTask = createReworkTask;
+window.openRunModal = openRunModal;
+window.closeRunModal = closeRunModal;
+window.confirmRunTask = confirmRunTask;
+window.openAddTaskModal = openAddTaskModal;
+window.closeAddTaskModal = closeAddTaskModal;
+window.confirmAddTask = confirmAddTask;
+window.confirmDoneTrack = confirmDoneTrack;
