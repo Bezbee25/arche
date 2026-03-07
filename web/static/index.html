@@ -4,7 +4,31 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>arche</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='14' fill='%230d0d0d'/><text x='50' y='74' font-family='monospace' font-size='62' font-weight='bold' fill='%2339c5cf' text-anchor='middle'>a</text></svg>">
   <link rel="stylesheet" href="/static/style.css">
+  <script>
+    /* Apply saved theme early to prevent flash */
+    (function() {
+      var PALETTES = {
+        light: {'--bg':'#f5f5f0','--bg2':'#ececea','--bg3':'#e3e3e0','--border':'#d0d0cc','--text':'#1a1a1a','--text-dim':'#888','--text-muted':'#555','--green':'#1a7f37','--yellow':'#9a6700','--red':'#cf222e','--blue':'#0550ae','--cyan':'#1b7c83','--purple':'#7a3e9d'},
+        pastelOrange: {'--bg':'#1e1b18','--bg2':'#26221e','--bg3':'#2e2a24','--border':'#3d3830','--text':'#e8e0d4','--text-dim':'#6e6358','--text-muted':'#a89880','--green':'#6ab06a','--yellow':'#e0945a','--red':'#e06a5a','--blue':'#7aaedd','--cyan':'#7ac4c0','--purple':'#c4a0e0'},
+        pastelViolet: {'--bg':'#181620','--bg2':'#201e2c','--bg3':'#282638','--border':'#363250','--text':'#dcd8ec','--text-dim':'#6a6480','--text-muted':'#9a94b8','--green':'#7acc88','--yellow':'#d4b06a','--red':'#e07a88','--blue':'#7aaae0','--cyan':'#7ac4d4','--purple':'#c0a0f0'},
+        nord: {'--bg':'#242933','--bg2':'#2e3440','--bg3':'#363d4a','--border':'#434c5e','--text':'#eceff4','--text-dim':'#616e88','--text-muted':'#9099a8','--green':'#a3be8c','--yellow':'#ebcb8b','--red':'#bf616a','--blue':'#81a1c1','--cyan':'#88c0d0','--purple':'#b48ead'},
+        solarized: {'--bg':'#002b36','--bg2':'#073642','--bg3':'#0d4050','--border':'#1a5060','--text':'#e0ddd0','--text-dim':'#4a6070','--text-muted':'#6a8090','--green':'#859900','--yellow':'#b58900','--red':'#dc322f','--blue':'#268bd2','--cyan':'#2aa198','--purple':'#6c71c4'},
+      };
+      // We don't know project name yet — try common keys
+      var themeId = null;
+      for (var i = 0; i < localStorage.length; i++) {
+        var k = localStorage.key(i);
+        if (k && k.indexOf('arche-theme-') === 0) { themeId = localStorage.getItem(k); break; }
+      }
+      if (themeId && PALETTES[themeId]) {
+        var r = document.documentElement;
+        var p = PALETTES[themeId];
+        for (var prop in p) r.style.setProperty(prop, p[prop]);
+      }
+    })();
+  </script>
   <!-- xterm.js -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
   <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
@@ -18,8 +42,11 @@
       <span id="project-name" class="project-name">loading...</span>
       <span class="header-actions">
         <button id="btn-new-plan" class="btn-sm">+ New track</button>
+        <button id="btn-archi" class="btn-ghost btn-sm" title="Architecture blueprint"><span class="btn-icon">⊞</span> Archi</button>
+        <button id="btn-memory" class="btn-ghost btn-sm" title="Shared memory"><span class="btn-icon">⊕</span> Memory</button>
         <button id="btn-web-refresh" class="btn-sm btn-ghost" title="Refresh">↺</button>
         <button id="btn-docs" class="btn-sm btn-ghost" title="Documentation">?</button>
+        <button id="btn-theme" class="btn-ghost btn-sm" title="Change theme">◑ Theme</button>
       </span>
     </header>
 
@@ -79,8 +106,7 @@
       <div id="console-bar">
         <div id="terminal-tabs"></div>
         <span id="console-status" class="console-status" title="Active terminal status">●</span>
-        <button id="btn-add-terminal" class="btn-ghost btn-sm" title="New terminal">+</button>
-        <button id="btn-console-toggle" class="btn-ghost btn-sm">−</button>
+        <button id="btn-console-toggle" class="btn-ghost btn-sm" title="Collapse/expand terminal">−</button>
       </div>
       <div id="terminal-container"></div>
     </div>
@@ -158,12 +184,55 @@
       <h3>New Track</h3>
       <div class="modal-section-label">Track name</div>
       <input id="modal-plan-name" type="text" placeholder="e.g. feat: JWT auth" autocomplete="off">
-      <div class="modal-section-label">Spec <span class="modal-hint">(fill in to auto-generate tasks)</span></div>
-      <input id="spec-goal" type="text" placeholder="Goal — main objective in one sentence">
-      <textarea id="spec-context" placeholder="Context — existing codebase, related features…" rows="2"></textarea>
-      <textarea id="spec-requirements" placeholder="Requirements — one per line" rows="3"></textarea>
-      <textarea id="spec-constraints" placeholder="Constraints — forbidden approaches, perf targets… (optional)" rows="2"></textarea>
-      <input id="spec-out-of-scope" type="text" placeholder="Out of scope (optional)">
+
+      <div class="modal-section-label" style="margin-top:12px;">Track type</div>
+      <div class="track-type-selector">
+        <button class="type-btn active" data-type="feature" onclick="selectTrackType('feature')">
+          <span class="type-icon">✦</span>
+          <span class="type-name">Big Feature</span>
+          <span class="type-desc">Full analyst Q&amp;A + LLM planning</span>
+        </button>
+        <button class="type-btn" data-type="task" onclick="selectTrackType('task')">
+          <span class="type-icon">⚙</span>
+          <span class="type-name">Dev Task</span>
+          <span class="type-desc">Quick task with template steps</span>
+        </button>
+        <button class="type-btn" data-type="debug" onclick="selectTrackType('debug')">
+          <span class="type-icon">⊘</span>
+          <span class="type-name">Debug Task</span>
+          <span class="type-desc">Bug fix with investigate + fix</span>
+        </button>
+      </div>
+
+      <!-- Feature fields -->
+      <div id="modal-feature-fields">
+        <div class="modal-section-label">Spec <span class="modal-hint">(fill in to auto-generate tasks)</span></div>
+        <input id="spec-goal" type="text" placeholder="Goal — main objective in one sentence">
+        <textarea id="spec-context" placeholder="Context — existing codebase, related features…" rows="2"></textarea>
+        <textarea id="spec-requirements" placeholder="Requirements — one per line" rows="3"></textarea>
+        <textarea id="spec-constraints" placeholder="Constraints — forbidden approaches, perf targets… (optional)" rows="2"></textarea>
+        <input id="spec-out-of-scope" type="text" placeholder="Out of scope (optional)">
+      </div>
+
+      <!-- Task fields -->
+      <div id="modal-task-fields" class="hidden">
+        <div class="modal-section-label">What needs to be done?</div>
+        <textarea id="task-description" placeholder="Describe the task in a few sentences…" rows="4"></textarea>
+        <div class="subtype-checks">
+          <label class="subtype-check"><input type="checkbox" id="task-subtype-test" value="test"> Add tests</label>
+          <label class="subtype-check"><input type="checkbox" id="task-subtype-doc" value="doc"> Update documentation</label>
+        </div>
+      </div>
+
+      <!-- Debug fields -->
+      <div id="modal-debug-fields" class="hidden">
+        <div class="modal-section-label">What is broken?</div>
+        <textarea id="debug-description" placeholder="Describe the bug and how to reproduce it…" rows="4"></textarea>
+        <div class="subtype-checks">
+          <label class="subtype-check"><input type="checkbox" id="debug-subtype-regression" value="regression"> Add regression test</label>
+        </div>
+      </div>
+
       <div class="modal-actions">
         <button id="modal-cancel" class="btn-ghost">Cancel</button>
         <button id="modal-create-only" class="btn-ghost btn-sm">Create only</button>
@@ -182,6 +251,30 @@
         <button id="phase-cancel" class="btn-ghost">Cancel</button>
         <button id="phase-create" class="btn-primary">Create Phase</button>
       </div>
+    </div>
+  </div>
+
+  <!-- Archi modal -->
+  <div id="modal-archi-overlay" class="hidden modal-overlay">
+    <div class="modal modal-wide" id="modal-archi">
+      <div class="docs-header">
+        <h3>Architecture Blueprint</h3>
+        <span id="archi-hint" class="archi-hint"></span>
+        <button id="archi-close" class="btn-ghost btn-sm">✕</button>
+      </div>
+      <pre id="archi-content" class="memory-content">(empty)</pre>
+    </div>
+  </div>
+
+  <!-- Memory modal -->
+  <div id="modal-memory-overlay" class="hidden modal-overlay">
+    <div class="modal modal-wide" id="modal-memory">
+      <div class="docs-header">
+        <h3>Shared Memory</h3>
+        <button id="memory-clear" class="btn-ghost btn-sm" style="color:var(--red)">Clear</button>
+        <button id="memory-close" class="btn-ghost btn-sm">✕</button>
+      </div>
+      <pre id="memory-content" class="memory-content">(empty)</pre>
     </div>
   </div>
 
@@ -205,7 +298,9 @@
             <div class="docs-row"><span class="docs-term">Track</span><span>A unit of work (feature, bugfix, refactor…). Has its own spec, tasks, and session log. Only one track is ACTIVE at a time.</span></div>
             <div class="docs-row"><span class="docs-term">Task</span><span>A single step inside a track. arche builds the full context and calls your LLM to execute it.</span></div>
             <div class="docs-row"><span class="docs-term">spec.md</span><span>Goal + requirements for the track — written once, used as context for every task run.</span></div>
-            <div class="docs-row"><span class="docs-term">archi.md</span><span>Architecture memory — automatically updated after each task run. Grows richer over time.</span></div>
+            <div class="docs-row"><span class="docs-term">archi.md</span><span>Global blueprint — generated by <code>arche scan</code>. Static reference for the project architecture.</span></div>
+            <div class="docs-row"><span class="docs-term">memory.md</span><span>Cross-track memory — shared discoveries written automatically after every task run, across all tracks.</span></div>
+            <div class="docs-row"><span class="docs-term">track/archi.md</span><span>Track-specific notes — automatically updated after each task run. Grows richer over time.</span></div>
           </div>
         </div>
 
@@ -234,6 +329,7 @@
           <div class="docs-table mono">
             <div class="docs-row hdr"><span>Setup</span></div>
             <div class="docs-row"><span class="docs-cmd">arche init</span><span>Configure project + choose LLM model per phase</span></div>
+            <div class="docs-row"><span class="docs-cmd">arche scan</span><span>Scan source files → storage/archi.md (optional, re-runnable)</span></div>
             <div class="docs-row"><span class="docs-cmd">arche web</span><span>Start the web UI (port 7331)</span></div>
             <div class="docs-row hdr"><span>Tracks</span></div>
             <div class="docs-row"><span class="docs-cmd">arche track new "feat: …"</span><span>Create track — spec Q&amp;A → task generation</span></div>
@@ -258,19 +354,37 @@
             <div class="docs-row"><span class="docs-cmd">arche debug "error"</span><span>Analyse error + fix with track context</span></div>
             <div class="docs-row"><span class="docs-cmd">arche doc</span><span>Generate documentation (Gemini large context)</span></div>
             <div class="docs-row"><span class="docs-cmd">arche log "note"</span><span>Add a manual note to the session journal</span></div>
+            <div class="docs-row hdr"><span>Memory</span></div>
+            <div class="docs-row"><span class="docs-cmd">arche memory show</span><span>Display the shared cross-track memory</span></div>
+            <div class="docs-row"><span class="docs-cmd">arche memory clear</span><span>Clear the shared cross-track memory</span></div>
           </div>
         </div>
 
         <div class="docs-section">
           <div class="docs-section-title">Storage layout</div>
-          <pre class="docs-pre">storage/tracks/{track-id}/
-├── spec.md       ← track goal and requirements
-├── archi.md      ← architecture memory (auto-updated)
-├── tasks.yaml    ← tasks, statuses, notes
-└── sessions/     ← {date}.md — full LLM output per session</pre>
+          <pre class="docs-pre">storage/
+├── project.yaml          ← project name, stack, model config
+├── archi.md              ← global blueprint (arche scan)
+├── memory.md             ← cross-track memory (auto-updated)
+└── tracks/{track-id}/
+    ├── spec.md           ← track goal and requirements
+    ├── archi.md          ← track-specific notes (auto-updated)
+    ├── tasks.yaml        ← tasks, statuses, notes
+    └── sessions/         ← {date}.md — full LLM output per session</pre>
         </div>
 
       </div>
+    </div>
+  </div>
+
+  <!-- Theme modal -->
+  <div id="modal-theme-overlay" class="hidden modal-overlay">
+    <div class="modal modal-theme" id="modal-theme">
+      <div class="docs-header">
+        <h3>Color Theme</h3>
+        <button id="theme-close" class="btn-ghost btn-sm">✕</button>
+      </div>
+      <div id="theme-options-list" class="theme-options-list"></div>
     </div>
   </div>
 

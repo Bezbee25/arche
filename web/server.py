@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 import sys
 from pathlib import Path
@@ -53,6 +54,7 @@ STATIC_DIR = Path(__file__).parent / "static"
 # ── Request models (module-level avoids annotation resolution issues) ────────
 class NewPlanRequest(BaseModel):
     name: str
+    track_type: str = "feature"
 
 class SwitchPlanRequest(BaseModel):
     track_id: str
@@ -94,6 +96,59 @@ class InterviewRequest(BaseModel):
 
 class ReworkRequest(BaseModel):
     review_issues: str = ""
+
+class TemplateGenerationRequest(BaseModel):
+    description: str
+    subtypes: list[str] = []
+
+
+def _parse_claude_json_line(raw: str) -> str:
+    """Parse one JSONL line from `claude --output-format stream-json`, return display text."""
+    raw = raw.strip()
+    if not raw:
+        return ""
+    try:
+        obj = json.loads(raw)
+    except json.JSONDecodeError:
+        return raw  # not JSON → pass through as plain text (e.g. error messages)
+
+    t = obj.get("type", "")
+
+    if t == "assistant":
+        parts = []
+        msg = obj.get("message", obj)
+        for block in msg.get("content", []):
+            if not isinstance(block, dict):
+                continue
+            bt = block.get("type", "")
+            if bt == "text":
+                parts.append(block.get("text", ""))
+            elif bt == "tool_use":
+                name = block.get("name", "tool")
+                inp = block.get("input", {})
+                if name == "Read":
+                    parts.append(f"[Reading: {inp.get('file_path', inp.get('path', ''))}]\n")
+                elif name == "Bash":
+                    parts.append(f"[$ {inp.get('command', inp.get('cmd', ''))}]\n")
+                elif name in ("Write", "Edit"):
+                    parts.append(f"[{name}: {inp.get('file_path', inp.get('path', ''))}]\n")
+                elif name == "Glob":
+                    parts.append(f"[Glob: {inp.get('pattern', '')}]\n")
+                elif name == "Grep":
+                    parts.append(f"[Grep: {inp.get('pattern', '')}]\n")
+                else:
+                    parts.append(f"[{name}]\n")
+        return "".join(parts)
+
+    if t == "text" and "text" in obj:
+        return obj["text"]
+
+    if t == "result":
+        if obj.get("is_error") or obj.get("subtype") == "error":
+            return f"\n⚠ Error: {obj.get('result', '')}\n"
+        return ""  # final accumulated text — skip to avoid duplication
+
+    return ""  # user (tool results), system events → skip
 
 
 def _compute_phase_status(track_id: str, phase_id: str, all_phases: list[dict], _visited: frozenset = frozenset()) -> str:
@@ -234,6 +289,8 @@ def create_app() -> FastAPI:
                 raise HTTPException(status_code=500, detail=f"CLI '{cli}' not found")
         tools = get_tools_for_phase("plan", plan)
         cmd = _build_command(cli, model, None, tools)
+        if cli == "claude":
+            cmd += ["--output-format", "stream-json", "--verbose"]
 
         async def generate_phases():
             output_lines: list[str] = []
@@ -244,19 +301,32 @@ def create_app() -> FastAPI:
                     stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.STDOUT,
+                    limit=10 * 1024 * 1024,  # 10 MB — Claude JSON lines can be large
                 )
                 proc.stdin.write(prompt.encode())
                 await proc.stdin.drain()
                 proc.stdin.close()
                 while True:
-                    chunk = await proc.stdout.read(4096)
-                    if not chunk:
-                        break
-                    text = chunk.decode("utf-8", errors="replace")
-                    output_lines.append(text)
-                    lines = text.split("\n")
-                    sse = "\n".join(f"data: {l}" for l in lines)
-                    yield f"{sse}\n\n"
+                    if cli == "claude":
+                        line = await proc.stdout.readline()
+                        if not line:
+                            break
+                        raw = line.decode("utf-8", errors="replace")
+                        text = _parse_claude_json_line(raw)
+                        if text:
+                            output_lines.append(text)
+                            sse_lines = text.split("\n")
+                            sse = "\n".join(f"data: {l}" for l in sse_lines)
+                            yield f"{sse}\n\n"
+                    else:
+                        chunk = await proc.stdout.read(4096)
+                        if not chunk:
+                            break
+                        text = chunk.decode("utf-8", errors="replace")
+                        output_lines.append(text)
+                        lines = text.split("\n")
+                        sse = "\n".join(f"data: {l}" for l in lines)
+                        yield f"{sse}\n\n"
                 await proc.wait()
 
                 output_str = "".join(output_lines)
@@ -317,6 +387,8 @@ def create_app() -> FastAPI:
                 raise HTTPException(status_code=500, detail=f"CLI '{cli}' not found")
         tools = get_tools_for_phase("plan", plan)
         cmd = _build_command(cli, model, None, tools)
+        if cli == "claude":
+            cmd += ["--output-format", "stream-json", "--verbose"]
 
         async def generate_phase_tasks():
             output_lines: list[str] = []
@@ -327,19 +399,32 @@ def create_app() -> FastAPI:
                     stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.STDOUT,
+                    limit=10 * 1024 * 1024,  # 10 MB — Claude JSON lines can be large
                 )
                 proc.stdin.write(prompt.encode())
                 await proc.stdin.drain()
                 proc.stdin.close()
                 while True:
-                    chunk = await proc.stdout.read(4096)
-                    if not chunk:
-                        break
-                    text = chunk.decode("utf-8", errors="replace")
-                    output_lines.append(text)
-                    lines = text.split("\n")
-                    sse = "\n".join(f"data: {l}" for l in lines)
-                    yield f"{sse}\n\n"
+                    if cli == "claude":
+                        line = await proc.stdout.readline()
+                        if not line:
+                            break
+                        raw = line.decode("utf-8", errors="replace")
+                        text = _parse_claude_json_line(raw)
+                        if text:
+                            output_lines.append(text)
+                            sse_lines = text.split("\n")
+                            sse = "\n".join(f"data: {l}" for l in sse_lines)
+                            yield f"{sse}\n\n"
+                    else:
+                        chunk = await proc.stdout.read(4096)
+                        if not chunk:
+                            break
+                        text = chunk.decode("utf-8", errors="replace")
+                        output_lines.append(text)
+                        lines = text.split("\n")
+                        sse = "\n".join(f"data: {l}" for l in lines)
+                        yield f"{sse}\n\n"
                 await proc.wait()
 
                 output_str = "".join(output_lines)
@@ -396,6 +481,8 @@ def create_app() -> FastAPI:
                 raise HTTPException(status_code=500, detail=f"CLI '{cli}' not found")
 
         cmd = _build_command(cli, model, None, ["Read"])
+        if cli == "claude":
+            cmd += ["--output-format", "stream-json", "--verbose"]
 
         async def generate():
             chunks: list[str] = []
@@ -406,20 +493,33 @@ def create_app() -> FastAPI:
                     stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.STDOUT,
+                    limit=10 * 1024 * 1024,  # 10 MB — Claude JSON lines can be large
                 )
                 proc.stdin.write(prompt.encode())
                 await proc.stdin.drain()
                 proc.stdin.close()
 
                 while True:
-                    chunk = await proc.stdout.read(4096)
-                    if not chunk:
-                        break
-                    text = chunk.decode("utf-8", errors="replace")
-                    chunks.append(text)
-                    lines = text.split("\n")
-                    sse = "\n".join(f"data: {l}" for l in lines)
-                    yield f"{sse}\n\n"
+                    if cli == "claude":
+                        line = await proc.stdout.readline()
+                        if not line:
+                            break
+                        raw = line.decode("utf-8", errors="replace")
+                        text = _parse_claude_json_line(raw)
+                        if text:
+                            chunks.append(text)
+                            sse_lines = text.split("\n")
+                            sse = "\n".join(f"data: {l}" for l in sse_lines)
+                            yield f"{sse}\n\n"
+                    else:
+                        chunk = await proc.stdout.read(4096)
+                        if not chunk:
+                            break
+                        text = chunk.decode("utf-8", errors="replace")
+                        chunks.append(text)
+                        lines = text.split("\n")
+                        sse = "\n".join(f"data: {l}" for l in lines)
+                        yield f"{sse}\n\n"
 
                 await proc.wait()
 
@@ -472,6 +572,8 @@ def create_app() -> FastAPI:
 
         tools = get_tools_for_phase("plan", plan)
         cmd = _build_command(cli, model, None, tools)
+        if cli == "claude":
+            cmd += ["--output-format", "stream-json", "--verbose"]
 
         async def generate():
             output_lines: list[str] = []
@@ -482,20 +584,33 @@ def create_app() -> FastAPI:
                     stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.STDOUT,
+                    limit=10 * 1024 * 1024,  # 10 MB — Claude JSON lines can be large
                 )
                 proc.stdin.write(prompt.encode())
                 await proc.stdin.drain()
                 proc.stdin.close()
 
                 while True:
-                    chunk = await proc.stdout.read(4096)
-                    if not chunk:
-                        break
-                    text = chunk.decode("utf-8", errors="replace")
-                    output_lines.append(text)
-                    lines = text.split("\n")
-                    sse = "\n".join(f"data: {l}" for l in lines)
-                    yield f"{sse}\n\n"
+                    if cli == "claude":
+                        line = await proc.stdout.readline()
+                        if not line:
+                            break
+                        raw = line.decode("utf-8", errors="replace")
+                        text = _parse_claude_json_line(raw)
+                        if text:
+                            output_lines.append(text)
+                            sse_lines = text.split("\n")
+                            sse = "\n".join(f"data: {l}" for l in sse_lines)
+                            yield f"{sse}\n\n"
+                    else:
+                        chunk = await proc.stdout.read(4096)
+                        if not chunk:
+                            break
+                        text = chunk.decode("utf-8", errors="replace")
+                        output_lines.append(text)
+                        lines = text.split("\n")
+                        sse = "\n".join(f"data: {l}" for l in lines)
+                        yield f"{sse}\n\n"
 
                 await proc.wait()
 
@@ -528,7 +643,7 @@ def create_app() -> FastAPI:
 
     @app.post("/api/tracks")
     def create_plan(req: NewPlanRequest):
-        plan = new_track(req.name)
+        plan = new_track(req.name, track_type=req.track_type)
         log(plan["id"], f"Plan '{req.name}' created via web UI", "INIT")
         return plan
 
@@ -554,6 +669,15 @@ def create_app() -> FastAPI:
     def create_task(track_id: str, req: NewTaskRequest):
         task = add_task(track_id, req.title, req.description, phase_id=req.phase_id)
         return task
+
+    @app.post("/api/tracks/{track_id}/tasks/generate-template")
+    def generate_tasks_template(track_id: str, req: TemplateGenerationRequest):
+        from agents.planner import generate_tasks_from_template
+        track = get_track(track_id)
+        if not track:
+            raise HTTPException(status_code=404, detail="Track not found")
+        tasks = generate_tasks_from_template(track_id, track, req.description, req.subtypes)
+        return {"tasks": tasks, "count": len(tasks)}
 
     @app.post("/api/tracks/{track_id}/tasks/next")
     def advance_task(track_id: str):
@@ -623,6 +747,8 @@ def create_app() -> FastAPI:
 
         tools = get_tools_for_phase(phase, plan)
         cmd = _build_command(cli, model, None, tools)
+        if cli == "claude":
+            cmd += ["--output-format", "stream-json", "--verbose"]
         prompt = build_task_prompt(track_id, plan, comment=comment)
 
         async def generate():
@@ -634,20 +760,33 @@ def create_app() -> FastAPI:
                     stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.STDOUT,  # merge stderr → no deadlock
+                    limit=10 * 1024 * 1024,  # 10 MB — Claude JSON lines can be large
                 )
                 proc.stdin.write(prompt.encode())
                 await proc.stdin.drain()  # flush buffer to the pipe
                 proc.stdin.close()
 
                 while True:
-                    chunk = await proc.stdout.read(4096)
-                    if not chunk:
-                        break
-                    text = chunk.decode("utf-8", errors="replace")
-                    output_lines.append(text)
-                    lines = text.split("\n")
-                    sse = "\n".join(f"data: {l}" for l in lines)
-                    yield f"{sse}\n\n"
+                    if cli == "claude":
+                        line = await proc.stdout.readline()
+                        if not line:
+                            break
+                        raw = line.decode("utf-8", errors="replace")
+                        text = _parse_claude_json_line(raw)
+                        if text:
+                            output_lines.append(text)
+                            sse_lines = text.split("\n")
+                            sse = "\n".join(f"data: {l}" for l in sse_lines)
+                            yield f"{sse}\n\n"
+                    else:
+                        chunk = await proc.stdout.read(4096)
+                        if not chunk:
+                            break
+                        text = chunk.decode("utf-8", errors="replace")
+                        output_lines.append(text)
+                        lines = text.split("\n")
+                        sse = "\n".join(f"data: {l}" for l in lines)
+                        yield f"{sse}\n\n"
 
                 await proc.wait()
 
@@ -670,6 +809,23 @@ def create_app() -> FastAPI:
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
+
+    @app.get("/api/archi")
+    def get_archi():
+        from core.scanner import get_global_archi, GLOBAL_ARCHI_PATH
+        return {"content": get_global_archi(), "exists": GLOBAL_ARCHI_PATH.exists()}
+
+    @app.get("/api/memory")
+    def get_memory():
+        from core.scanner import get_global_memory, GLOBAL_MEMORY_PATH
+        return {"content": get_global_memory(), "exists": GLOBAL_MEMORY_PATH.exists()}
+
+    @app.delete("/api/memory")
+    def clear_memory():
+        from core.scanner import GLOBAL_MEMORY_PATH
+        if GLOBAL_MEMORY_PATH.exists():
+            GLOBAL_MEMORY_PATH.unlink()
+        return {"ok": True}
 
     @app.post("/api/tracks/{track_id}/spec/interview")
     async def stream_spec_interview(track_id: str, req: InterviewRequest):
@@ -702,6 +858,8 @@ def create_app() -> FastAPI:
             else:
                 raise HTTPException(status_code=500, detail=f"CLI '{cli}' not found")
         cmd = _build_command(cli, model, None, ["Read"])
+        if cli == "claude":
+            cmd += ["--output-format", "stream-json", "--verbose"]
 
         async def generate_interview():
             chunks: list[str] = []
@@ -712,19 +870,32 @@ def create_app() -> FastAPI:
                     stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.STDOUT,
+                    limit=10 * 1024 * 1024,  # 10 MB — Claude JSON lines can be large
                 )
                 proc.stdin.write(prompt.encode())
                 await proc.stdin.drain()
                 proc.stdin.close()
                 while True:
-                    chunk = await proc.stdout.read(4096)
-                    if not chunk:
-                        break
-                    text = chunk.decode("utf-8", errors="replace")
-                    chunks.append(text)
-                    lines = text.split("\n")
-                    sse = "\n".join(f"data: {l}" for l in lines)
-                    yield f"{sse}\n\n"
+                    if cli == "claude":
+                        line = await proc.stdout.readline()
+                        if not line:
+                            break
+                        raw = line.decode("utf-8", errors="replace")
+                        text = _parse_claude_json_line(raw)
+                        if text:
+                            chunks.append(text)
+                            sse_lines = text.split("\n")
+                            sse = "\n".join(f"data: {l}" for l in sse_lines)
+                            yield f"{sse}\n\n"
+                    else:
+                        chunk = await proc.stdout.read(4096)
+                        if not chunk:
+                            break
+                        text = chunk.decode("utf-8", errors="replace")
+                        chunks.append(text)
+                        lines = text.split("\n")
+                        sse = "\n".join(f"data: {l}" for l in lines)
+                        yield f"{sse}\n\n"
                 await proc.wait()
                 output = "".join(chunks).strip()
                 if "# Spec:" in output:
@@ -778,6 +949,8 @@ def create_app() -> FastAPI:
                 raise HTTPException(status_code=500, detail=f"CLI '{cli}' not found")
         tools = get_tools_for_phase("review", plan)
         cmd = _build_command(cli, model, None, tools)
+        if cli == "claude":
+            cmd += ["--output-format", "stream-json", "--verbose"]
 
         async def generate_review():
             chunks: list[str] = []
@@ -788,19 +961,32 @@ def create_app() -> FastAPI:
                     stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.STDOUT,
+                    limit=10 * 1024 * 1024,  # 10 MB — Claude JSON lines can be large
                 )
                 proc.stdin.write(prompt.encode())
                 await proc.stdin.drain()
                 proc.stdin.close()
                 while True:
-                    chunk = await proc.stdout.read(4096)
-                    if not chunk:
-                        break
-                    text = chunk.decode("utf-8", errors="replace")
-                    chunks.append(text)
-                    lines = text.split("\n")
-                    sse = "\n".join(f"data: {l}" for l in lines)
-                    yield f"{sse}\n\n"
+                    if cli == "claude":
+                        line = await proc.stdout.readline()
+                        if not line:
+                            break
+                        raw = line.decode("utf-8", errors="replace")
+                        text = _parse_claude_json_line(raw)
+                        if text:
+                            chunks.append(text)
+                            sse_lines = text.split("\n")
+                            sse = "\n".join(f"data: {l}" for l in sse_lines)
+                            yield f"{sse}\n\n"
+                    else:
+                        chunk = await proc.stdout.read(4096)
+                        if not chunk:
+                            break
+                        text = chunk.decode("utf-8", errors="replace")
+                        chunks.append(text)
+                        lines = text.split("\n")
+                        sse = "\n".join(f"data: {l}" for l in lines)
+                        yield f"{sse}\n\n"
                 await proc.wait()
                 output = "".join(chunks)
                 if "## VERDICT: PASS" in output:

@@ -5,7 +5,7 @@ import re
 
 from rich.console import Console
 
-from core.track_manager import get_spec, update_track_meta, update_track_phase
+from core.track_manager import get_spec, save_spec, update_track_meta, update_track_phase
 from core.router import call_llm
 from core.session_logger import log
 from core.task_engine import add_tasks_bulk, load_tasks
@@ -77,6 +77,40 @@ Spec:
 {spec}
 
 Output the task list now:"""
+
+
+def generate_tasks_from_template(
+    track_id: str, track_meta: dict, description: str, subtypes: list[str]
+) -> list[dict]:
+    """Generate template tasks instantly (no LLM) for task/debug track types."""
+    track_type = track_meta.get("track_type", "task")
+    name = track_meta.get("name", "")
+
+    # Save description as spec
+    spec = f"# Spec: {name}\n\n## Description\n\n{description}\n"
+    save_spec(track_id, spec)
+
+    if track_type == "debug":
+        tasks = [
+            {"title": "Investigate root cause", "description": f"Reproduce and identify the root cause of: {description}"},
+            {"title": "Implement fix", "description": "Apply the fix based on the investigation findings"},
+        ]
+        if "regression" in subtypes:
+            tasks.append({"title": "Add regression test", "description": "Write a test that catches this bug to prevent future regressions"})
+    else:
+        # task type
+        tasks = [
+            {"title": f"Implement: {name}", "description": description},
+        ]
+        if "test" in subtypes:
+            tasks.append({"title": "Write tests", "description": f"Write tests covering the implementation of: {description}"})
+        if "doc" in subtypes:
+            tasks.append({"title": "Update documentation", "description": f"Update docs/README to reflect changes for: {description}"})
+
+    new_tasks = add_tasks_bulk(track_id, tasks)
+    update_track_phase(track_id, "dev")
+    log(track_id, f"Generated {len(new_tasks)} template tasks ({track_type})", "PLANNER")
+    return new_tasks
 
 
 def generate_tasks(track_id: str, track_meta: dict) -> list[dict]:

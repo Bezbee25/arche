@@ -12,6 +12,12 @@ from core.router import call_llm, get_model_for_phase
 console = Console()
 
 GLOBAL_ARCHI_PATH = STORAGE_DIR / "archi.md"
+GLOBAL_MEMORY_PATH = STORAGE_DIR / "memory.md"
+
+
+def get_global_memory() -> str:
+    """Return the shared cross-track memory content."""
+    return GLOBAL_MEMORY_PATH.read_text() if GLOBAL_MEMORY_PATH.exists() else ""
 
 # Directories to ignore completely
 SKIP_DIRS = {
@@ -81,7 +87,14 @@ Stack declared: {stack}
 {files_content}
 --- END ---
 
-Output only the Markdown content, starting with # Architecture — {name}"""
+Output only the Markdown content, using this exact structure:
+
+# Architecture — {name}
+
+> [One sentence: what this project does, for whom, in plain language. No technical jargon.]
+
+## Stack
+…"""
 
 
 def _build_tree(root: Path, max_depth: int = 4) -> str:

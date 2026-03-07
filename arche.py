@@ -19,9 +19,11 @@ app = typer.Typer(
 track_app = typer.Typer(help="Manage development tracks", no_args_is_help=True)
 task_app = typer.Typer(help="Manage tasks within the active track", no_args_is_help=True)
 spec_app = typer.Typer(help="Manage the spec of the active track", no_args_is_help=True)
+memory_app = typer.Typer(help="Global cross-track memory", no_args_is_help=True)
 app.add_typer(track_app, name="track")
 app.add_typer(task_app, name="task")
 app.add_typer(spec_app, name="spec")
+app.add_typer(memory_app, name="memory")
 
 console = Console()
 
@@ -102,12 +104,14 @@ def _show_help() -> None:
         "  When you run [bold yellow]arche task run[/bold yellow], arche:\n\n"
         "  [dim]1.[/dim]  Reads the [bold]current task[/bold] (title + description)\n"
         "  [dim]2.[/dim]  Assembles the [bold]full context[/bold]:\n"
-        "       spec.md       ← plan goal and requirements\n"
-        "       archi.md      ← architecture memory (updated after every task)\n"
-        "       done tasks    ← what has already been completed\n"
-        "       session log   ← notes from the current session\n"
+        "       spec.md              ← track goal and requirements\n"
+        "       storage/archi.md     ← global blueprint (arche scan)\n"
+        "       storage/memory.md    ← cross-track discoveries (shared)\n"
+        "       tracks/{id}/archi.md ← track-specific architecture notes\n"
+        "       done tasks           ← what has already been completed\n"
+        "       session log          ← notes from the current session\n"
         "  [dim]3.[/dim]  Calls [bold]claude / gemini via CLI[/bold] with that context\n"
-        "  [dim]4.[/dim]  Extracts [bold]architecture notes[/bold] from the response → archi.md\n"
+        "  [dim]4.[/dim]  Extracts [bold]architecture notes[/bold] → track archi.md + shared memory.md\n"
         "  [dim]5.[/dim]  Logs everything to the [bold]session journal[/bold]",
         highlight=False,
     )
@@ -168,6 +172,7 @@ def _show_help() -> None:
 
     section("Setup", "cyan", [
         ("arche init",                    "Configure project + choose LLM models per phase"),
+        ("arche scan",                    "Scan source files → storage/archi.md (optional, re-runnable)"),
         ("arche web  [--port 7331]",      "Web UI with embedded terminal"),
         ("arche help",                    "Show this guide"),
     ])
@@ -199,6 +204,11 @@ def _show_help() -> None:
         ("arche spec help",               "  Full spec command reference"),
     ])
 
+    section("Memory  ← cross-track", "cyan", [
+        ("arche memory show",             "Display the shared cross-track memory"),
+        ("arche memory clear",            "Clear the shared cross-track memory"),
+    ])
+
     section("Agents  ← ad-hoc", "magenta", [
         ("arche dev \"<instruction>\"",   "Free-form coding request with full track context"),
         ("arche debug \"<error>\"",       "Analyse error + fix with track context"),
@@ -210,18 +220,22 @@ def _show_help() -> None:
     c.print(Rule("Files managed automatically", style="dim"))
     c.print()
     c.print(
-        "  [dim]storage/plans/{plan-id}/[/dim]\n"
-        "  [dim]├──[/dim] [bold]spec.md[/bold]      [dim]← plan goal and requirements[/dim]\n"
-        "  [dim]├──[/dim] [bold cyan]archi.md[/bold cyan]     [dim]← architecture memory, updated after every task run[/dim]\n"
-        "  [dim]├──[/dim] [bold]tasks.yaml[/bold]   [dim]← tasks, statuses, notes[/dim]\n"
-        "  [dim]└──[/dim] [bold]sessions/[/bold]    [dim]← session journal {date}.md with all LLM output[/dim]",
+        "  [dim]storage/[/dim]\n"
+        "  [dim]├──[/dim] [bold]project.yaml[/bold]   [dim]← project name, stack, model config[/dim]\n"
+        "  [dim]├──[/dim] [bold cyan]archi.md[/bold cyan]       [dim]← global blueprint (arche scan, static)[/dim]\n"
+        "  [dim]├──[/dim] [bold green]memory.md[/bold green]      [dim]← cross-track discoveries (auto-updated)[/dim]\n"
+        "  [dim]└── tracks/{id}/[/dim]\n"
+        "  [dim]    ├──[/dim] [bold]spec.md[/bold]      [dim]← track goal and requirements[/dim]\n"
+        "  [dim]    ├──[/dim] [bold cyan]archi.md[/bold cyan]     [dim]← track-specific notes (auto-updated)[/dim]\n"
+        "  [dim]    ├──[/dim] [bold]tasks.yaml[/bold]   [dim]← tasks, statuses, notes[/dim]\n"
+        "  [dim]    └──[/dim] [bold]sessions/[/bold]    [dim]← {date}.md — full LLM output per session[/dim]",
         highlight=False,
     )
     c.print()
     c.print(
-        "  [dim]The [/dim][bold cyan]archi.md[/bold cyan][dim] is the key: every [/dim][bold]arche task run[/bold]"
-        "[dim] instructs the LLM to document\n"
-        "  its decisions → context grows richer with each completed task.[/dim]",
+        "  Every [bold]arche task run[/bold][dim] instructs the LLM to document its decisions.[/dim]\n"
+        "  [dim]Notes go to both [/dim][bold cyan]tracks/{id}/archi.md[/bold cyan][dim] and [/dim][bold green]storage/memory.md[/bold green][dim].\n"
+        "  Context grows richer with each task — across all tracks.[/dim]",
         highlight=False,
     )
     c.print()
@@ -342,6 +356,65 @@ def scan() -> None:
     _require_project()
     from core.scanner import run_scan
     run_scan()
+
+
+@app.command()
+def info() -> None:
+    """Show project info: architecture blueprint and cross-track memory (no LLM)."""
+    from rich.rule import Rule
+    from rich.markdown import Markdown
+    from core.scanner import GLOBAL_ARCHI_PATH, GLOBAL_MEMORY_PATH, get_global_archi, get_global_memory
+    from core.track_manager import TRACKS_DIR
+
+    project = _require_project()
+    name    = project.get("name", Path.cwd().name)
+    stack   = project.get("stack", "—")
+    models  = project.get("models", {})
+
+    # ── Project header ────────────────────────────────────────────────────
+    console.print()
+    console.print(Rule(f"[bold cyan]arche info[/bold cyan]  —  {name}", style="cyan"))
+    console.print(f"  [dim]Stack  :[/dim] {stack}")
+    if models:
+        model_str = "  ".join(f"[dim]{p}:[/dim] {m}" for p, m in models.items())
+        console.print(f"  [dim]Models :[/dim] {model_str}")
+
+    # ── Global archi.md ───────────────────────────────────────────────────
+    console.print()
+    console.print(Rule(f"[bold]Architecture blueprint[/bold]  [dim]{GLOBAL_ARCHI_PATH}[/dim]", style="blue"))
+    archi = get_global_archi()
+    if archi and archi.strip():
+        console.print(Markdown(archi))
+    else:
+        console.print("  [dim]No blueprint yet — run [bold]arche scan[/bold] to generate one.[/dim]")
+
+    # ── Cross-track memory ────────────────────────────────────────────────
+    console.print()
+    console.print(Rule(f"[bold]Cross-track memory[/bold]  [dim]{GLOBAL_MEMORY_PATH}[/dim]", style="green"))
+    memory = get_global_memory()
+    if memory and memory.strip():
+        console.print(Markdown(memory))
+    else:
+        console.print("  [dim]Empty — memory fills up automatically as tasks run.[/dim]")
+
+    # ── Per-track archi summary ───────────────────────────────────────────
+    track_archis = sorted(TRACKS_DIR.glob("*/archi.md")) if TRACKS_DIR.exists() else []
+    if track_archis:
+        console.print()
+        console.print(Rule("[bold]Track architecture notes[/bold]", style="dim"))
+        for path in track_archis:
+            track_id = path.parent.name
+            content  = path.read_text().strip()
+            if not content:
+                continue
+            console.print(f"\n  [cyan]{track_id}[/cyan]  [dim]{path}[/dim]")
+            # Show a short preview (first 300 chars)
+            preview = content[:300] + ("…" if len(content) > 300 else "")
+            console.print(f"  [dim]{preview}[/dim]")
+
+    console.print()
+    console.print(Rule(style="dim"))
+    console.print()
 
 
 @app.command()
@@ -523,35 +596,73 @@ def track_help() -> None:
     console.print()
 
 
+_TRACK_TYPE_MENU = {
+    "1": ("feature", "Big Feature — Full analyst Q&A + LLM planning"),
+    "2": ("task",    "Dev Task   — Quick task with template steps"),
+    "3": ("debug",   "Debug Task — Bug fix with investigate + fix"),
+}
+
+
 @track_app.command("new")
 def track_new(
     name: str = typer.Argument(..., help="Track name, e.g. 'feat: JWT auth'"),
-    skip_analyst: bool = typer.Option(False, "--skip-analyst", help="Skip interactive spec creation"),
+    track_type: Optional[str] = typer.Option(None, "--type", "-t", help="Track type: feature | task | debug"),
+    skip_analyst: bool = typer.Option(False, "--skip-analyst", help="Skip interactive spec creation (feature only)"),
     skip_planner: bool = typer.Option(False, "--skip-planner", help="Skip task generation"),
-    no_refine: bool = typer.Option(False, "--no-refine", help="Skip LLM spec refinement after Q&A"),
+    no_refine: bool = typer.Option(False, "--no-refine", help="Skip LLM spec refinement after Q&A (feature only)"),
 ) -> None:
-    """Create a new track and launch the analyst → planner flow."""
+    """Create a new track and launch the appropriate flow."""
     _require_project()
     from core.track_manager import new_track
     from core.session_logger import log as slog
 
-    plan = new_track(name)
+    # Resolve track type
+    if track_type is None:
+        console.print("\n[bold]Track type:[/bold]")
+        for key, (_, label) in _TRACK_TYPE_MENU.items():
+            console.print(f"  [cyan]{key}[/cyan]. {label}")
+        choice = Prompt.ask("\nType [1-3]", default="1").strip()
+        track_type = _TRACK_TYPE_MENU.get(choice, ("feature", ""))[0]
+
+    if track_type not in ("feature", "task", "debug"):
+        console.print(f"[red]Unknown track type:[/red] {track_type}. Use feature, task, or debug.")
+        raise typer.Exit(1)
+
+    plan = new_track(name, track_type=track_type)
     track_id = plan["id"]
-    console.print(f"\n[green]✓ Track created:[/green] [bold]{name}[/bold] (id: {track_id})")
+    console.print(f"\n[green]✓ Track created:[/green] [bold]{name}[/bold] (id: {track_id}, type: {track_type})")
 
-    spec_content = None
-    if not skip_analyst:
-        from agents.analyst import run_interactive
-        spec_content = run_interactive(track_id, name, auto_refine=not no_refine)
+    if track_type == "feature":
+        spec_content = None
+        if not skip_analyst:
+            from agents.analyst import run_interactive
+            spec_content = run_interactive(track_id, name, auto_refine=not no_refine)
 
-    if not skip_planner and spec_content:
-        from agents.planner import generate_tasks_from_spec_text
-        generate_tasks_from_spec_text(track_id, plan, spec_content)
-    elif not skip_planner:
-        from agents.planner import generate_tasks
-        generate_tasks(track_id, plan)
+        if not skip_planner and spec_content:
+            from agents.planner import generate_tasks_from_spec_text
+            generate_tasks_from_spec_text(track_id, plan, spec_content)
+        elif not skip_planner:
+            from agents.planner import generate_tasks
+            generate_tasks(track_id, plan)
+    else:
+        # task / debug — template-based flow
+        if track_type == "debug":
+            description = Prompt.ask("\nWhat is broken?")
+            add_regression = Confirm.ask("Include regression test?", default=False)
+            subtypes = ["regression"] if add_regression else []
+        else:
+            description = Prompt.ask("\nWhat needs to be done?")
+            add_test = Confirm.ask("Include tests?", default=False)
+            add_doc  = Confirm.ask("Include documentation task?", default=False)
+            subtypes = []
+            if add_test: subtypes.append("test")
+            if add_doc:  subtypes.append("doc")
 
-    slog(track_id, f"Track '{name}' created", "INIT")
+        if not skip_planner:
+            from agents.planner import generate_tasks_from_template
+            generate_tasks_from_template(track_id, plan, description, subtypes)
+
+    slog(track_id, f"Track '{name}' created ({track_type})", "INIT")
 
     from core.status import show_resume
     show_resume()
@@ -946,6 +1057,32 @@ def task_show(
             console.print(f"\n[green]✓ Task updated.[/green]")
         else:
             console.print(f"\n[dim]No changes.[/dim]")
+
+
+# ── Memory subcommands ────────────────────────────────────────────────────────
+
+@memory_app.command("show")
+def memory_show() -> None:
+    """Show the shared cross-track memory."""
+    from core.scanner import get_global_memory, GLOBAL_MEMORY_PATH
+    from rich.panel import Panel
+    content = get_global_memory()
+    if not content.strip():
+        console.print("[dim]Shared memory is empty — it fills up automatically as tasks run.[/dim]")
+    else:
+        console.print(Panel(content, title=f"[cyan]Shared Memory[/cyan] ({GLOBAL_MEMORY_PATH})", border_style="cyan"))
+
+
+@memory_app.command("clear")
+def memory_clear() -> None:
+    """Clear the shared cross-track memory."""
+    from core.scanner import GLOBAL_MEMORY_PATH
+    if not GLOBAL_MEMORY_PATH.exists():
+        console.print("[dim]Memory is already empty.[/dim]")
+        return
+    if Confirm.ask("Clear all shared memory?"):
+        GLOBAL_MEMORY_PATH.unlink()
+        console.print("[green]✓ Shared memory cleared.[/green]")
 
 
 if __name__ == "__main__":

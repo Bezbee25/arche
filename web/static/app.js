@@ -27,6 +27,7 @@ const state = {
   reviewTask: null,         // { planId, taskId, verdict, issues } | null
   newPhasePlanId: null,
   addTaskTrackId: null,
+  newTrackType: 'feature',
 };
 
 let _termCounter = 0;
@@ -58,7 +59,8 @@ const api = {
   getTrack: (id) => apiFetch(`/api/tracks/${id}`),
   getTrackSpec: (id) => apiFetch(`/api/tracks/${id}/spec`),
   getSession: (trackId, date) => apiFetch(`/api/tracks/${trackId}/sessions/${date}`),
-  createTrack: (name) => apiFetch('/api/tracks', { method: 'POST', body: JSON.stringify({ name }) }),
+  createTrack: (name, trackType = 'feature') => apiFetch('/api/tracks', { method: 'POST', body: JSON.stringify({ name, track_type: trackType }) }),
+  generateTemplate: (planId, description, subtypes) => apiFetch(`/api/tracks/${planId}/tasks/generate-template`, { method: 'POST', body: JSON.stringify({ description, subtypes }) }),
   switchTrack: (id) => apiFetch('/api/tracks/switch', { method: 'POST', body: JSON.stringify({ track_id: id }) }),
   doneTrack: (id) => apiFetch(`/api/tracks/${id}/done`, { method: 'POST' }),
   nextTask: (trackId) => apiFetch(`/api/tracks/${trackId}/tasks/next`, { method: 'POST' }),
@@ -72,6 +74,10 @@ const api = {
   getPhases: (trackId) => apiFetch(`/api/tracks/${trackId}/phases`),
   createPhase: (trackId, name, desc, depends_on = []) => apiFetch(`/api/tracks/${trackId}/phases`, { method: 'POST', body: JSON.stringify({ name, description: desc, depends_on }) }),
   deletePhase: (trackId, phaseId) => apiFetch(`/api/tracks/${trackId}/phases/${phaseId}`, { method: 'DELETE' }),
+  // Archi + Memory
+  getArchi: () => apiFetch('/api/archi'),
+  getMemory: () => apiFetch('/api/memory'),
+  clearMemory: () => apiFetch('/api/memory', { method: 'DELETE' }),
 };
 
 // ── DOM refs ───────────────────────────────────────────────────────────────
@@ -80,9 +86,12 @@ const $id = (id) => document.getElementById(id);
 
 // ── Init ───────────────────────────────────────────────────────────────────
 async function init() {
-  setupTerminal();
   setupResizableConsole();
-  setupEventListeners();
+  setupEventListeners();  // registers theme listeners synchronously
+  try { setupTerminal(); } catch (e) { console.error('Terminal init failed', e); }
+  // Fetch project so theme key is scoped to the project
+  const project = await api.getProject();
+  setupTheme(project ? (project.name || 'default') : 'default');
   await refresh();
   startPolling();
 }
@@ -300,11 +309,15 @@ function renderTasks(plan) {
     </div>`;
 
   pane.innerHTML = `
-    <div class="tasks-toolbar">
-      <div class="filter-bar">${filterBar}</div>
-      ${actionBar}
+    <div class="tasks-toolbar-wrap">
+      <div class="tasks-toolbar">
+        <div class="filter-bar">${filterBar}</div>
+        ${actionBar}
+      </div>
     </div>
-    <div class="tasks-list">${taskRows || '<div class="empty-state" style="padding:20px 0">No tasks match this filter.</div>'}</div>`;
+    <div class="tasks-scroll">
+      <div class="tasks-list">${taskRows || '<div class="empty-state" style="padding:20px 0">No tasks match this filter.</div>'}</div>
+    </div>`;
 
   // Filter buttons
   pane.querySelectorAll('.filter-btn').forEach(btn => {
@@ -406,14 +419,16 @@ function renderTasksWithPhases(plan, phases) {
   }).join('');
 
   const toolbar = `
-    <div class="tasks-toolbar" style="margin-bottom:8px">
-      ${actionBar}
-      <button class="btn-ghost btn-sm" onclick="openAddTaskModal('${planId}')" title="Add task">+ Add</button>
-      <button class="btn-ghost btn-sm" onclick="openNewPhaseModal('${planId}')" title="Add phase">+ Phase</button>
-      <button class="btn-ghost btn-sm" onclick="generatePhases('${planId}')" title="Generate phases from spec">⚡ Phases</button>
+    <div class="tasks-toolbar-wrap">
+      <div class="tasks-toolbar">
+        ${actionBar}
+        <button class="btn-ghost btn-sm" onclick="openAddTaskModal('${planId}')" title="Add task">+ Add</button>
+        <button class="btn-ghost btn-sm" onclick="openNewPhaseModal('${planId}')" title="Add phase">+ Phase</button>
+        <button class="btn-ghost btn-sm" onclick="generatePhases('${planId}')" title="Generate phases from spec">⚡ Phases</button>
+      </div>
     </div>`;
 
-  pane.innerHTML = toolbar + `<div class="phase-list">${phaseSections}</div>`;
+  pane.innerHTML = toolbar + `<div class="tasks-scroll"><div class="phase-list">${phaseSections}</div></div>`;
 
   // Bind task clicks
   pane.querySelectorAll('.task-item:not(.task-locked)').forEach(row => {
@@ -468,6 +483,33 @@ function openNewPhaseModal(planId) {
 function closePhaseModal() {
   $id('modal-phase-overlay').classList.add('hidden');
   state.newPhasePlanId = null;
+}
+
+async function openArchiModal() {
+  const data = await api.getArchi();
+  $id('archi-content').textContent = data?.content?.trim() || '(empty — run arche scan to generate)';
+  $id('archi-hint').textContent = data?.exists ? 'storage/archi.md' : 'not generated yet';
+  $id('modal-archi-overlay').classList.remove('hidden');
+}
+
+function closeArchiModal() {
+  $id('modal-archi-overlay').classList.add('hidden');
+}
+
+async function openMemoryModal() {
+  const data = await api.getMemory();
+  $id('memory-content').textContent = data?.content?.trim() || '(empty — no cross-track discoveries yet)';
+  $id('modal-memory-overlay').classList.remove('hidden');
+}
+
+function closeMemoryModal() {
+  $id('modal-memory-overlay').classList.add('hidden');
+}
+
+async function clearMemory() {
+  if (!confirm('Clear all shared memory? This cannot be undone.')) return;
+  await api.clearMemory();
+  $id('memory-content').textContent = '(empty)';
 }
 
 async function confirmNewPhase() {
@@ -945,6 +987,11 @@ function setupTerminal() {
 }
 
 function addTerminal() {
+  if (state.consoleCollapsed) {
+    $id('console-wrapper').classList.remove('collapsed');
+    state.consoleCollapsed = false;
+    $id('btn-console-toggle').textContent = '−';
+  }
   _termCounter++;
   const id = `t${_termCounter}`;
 
@@ -1002,7 +1049,8 @@ function renderTerminalTabs() {
             onclick="selectTerminal('${t.id}')">
       Term&nbsp;${t.id.slice(1)}
       ${canClose ? `<span class="term-tab-close" onclick="event.stopPropagation();removeTerminal('${t.id}')">×</span>` : ''}
-    </button>`).join('');
+    </button>`).join('') +
+    `<button class="term-tab-add" onclick="addTerminal()" title="New terminal">+</button>`;
 }
 
 function _fitActive() {
@@ -1049,6 +1097,7 @@ function setupEventListeners() {
 
   // New plan button
   $id('btn-new-plan').addEventListener('click', () => {
+    selectTrackType('feature');
     $id('modal-overlay').classList.remove('hidden');
     $id('modal-plan-name').focus();
   });
@@ -1105,22 +1154,26 @@ function setupEventListeners() {
   // Refresh button
   $id('btn-web-refresh').addEventListener('click', refresh);
 
+  // Archi button
+  $id('btn-archi').addEventListener('click', openArchiModal);
+  $id('archi-close').addEventListener('click', closeArchiModal);
+  $id('modal-archi-overlay').addEventListener('click', (e) => {
+    if (e.target === $id('modal-archi-overlay')) closeArchiModal();
+  });
+
+  // Memory button
+  $id('btn-memory').addEventListener('click', openMemoryModal);
+  $id('memory-close').addEventListener('click', closeMemoryModal);
+  $id('memory-clear').addEventListener('click', clearMemory);
+  $id('modal-memory-overlay').addEventListener('click', (e) => {
+    if (e.target === $id('modal-memory-overlay')) closeMemoryModal();
+  });
+
   // Docs button
   $id('btn-docs').addEventListener('click', () => $id('modal-docs-overlay').classList.remove('hidden'));
   $id('docs-close').addEventListener('click', () => $id('modal-docs-overlay').classList.add('hidden'));
   $id('modal-docs-overlay').addEventListener('click', (e) => {
     if (e.target === $id('modal-docs-overlay')) $id('modal-docs-overlay').classList.add('hidden');
-  });
-
-  // New terminal button
-  $id('btn-add-terminal').addEventListener('click', () => {
-    if (state.consoleCollapsed) {
-      const wrapper = $id('console-wrapper');
-      wrapper.classList.remove('collapsed');
-      state.consoleCollapsed = false;
-      $id('btn-console-toggle').textContent = '−';
-    }
-    addTerminal();
   });
 
   // Console toggle
@@ -1132,12 +1185,29 @@ function setupEventListeners() {
     btn.textContent = state.consoleCollapsed ? '+' : '−';
     if (!state.consoleCollapsed) setTimeout(() => _fitActive(), 50);
   });
+
+  // Theme
+  _initThemeListeners();
+}
+
+function selectTrackType(type) {
+  state.newTrackType = type;
+  document.querySelectorAll('.type-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.type === type);
+  });
+  $id('modal-feature-fields').classList.toggle('hidden', type !== 'feature');
+  $id('modal-task-fields').classList.toggle('hidden', type !== 'task');
+  $id('modal-debug-fields').classList.toggle('hidden', type !== 'debug');
 }
 
 function closeModal() {
   $id('modal-overlay').classList.add('hidden');
-  ['modal-plan-name','spec-goal','spec-context','spec-requirements','spec-constraints','spec-out-of-scope']
+  ['modal-plan-name','spec-goal','spec-context','spec-requirements','spec-constraints','spec-out-of-scope',
+   'task-description','debug-description']
     .forEach(id => { const el = $id(id); if (el) el.value = ''; });
+  ['task-subtype-test','task-subtype-doc','debug-subtype-regression']
+    .forEach(id => { const el = $id(id); if (el) el.checked = false; });
+  selectTrackType('feature');
 }
 
 function _buildSpec(name, goal, context, requirements, constraints, outOfScope) {
@@ -1154,38 +1224,66 @@ function _buildSpec(name, goal, context, requirements, constraints, outOfScope) 
 async function createPlan(withGenerate = false) {
   const name = $id('modal-plan-name').value.trim();
   if (!name) return;
+  const trackType = state.newTrackType;
 
-  const goal         = $id('spec-goal').value.trim();
-  const context      = $id('spec-context').value.trim();
-  const requirements = $id('spec-requirements').value.trim();
-  const constraints  = $id('spec-constraints').value.trim();
-  const outOfScope   = $id('spec-out-of-scope').value.trim();
-  const hasSpec = goal || requirements;
+  if (trackType === 'feature') {
+    const goal         = $id('spec-goal').value.trim();
+    const context      = $id('spec-context').value.trim();
+    const requirements = $id('spec-requirements').value.trim();
+    const constraints  = $id('spec-constraints').value.trim();
+    const outOfScope   = $id('spec-out-of-scope').value.trim();
+    const hasSpec = goal || requirements;
 
-  closeModal();
-  const plan = await api.createTrack(name);
-  if (!plan || !plan.id) { await refresh(); return; }
+    closeModal();
+    const plan = await api.createTrack(name, 'feature');
+    if (!plan || !plan.id) { await refresh(); return; }
 
-  if (hasSpec) {
-    const spec = _buildSpec(name, goal, context, requirements, constraints, outOfScope);
-    await api.saveSpec(plan.id, spec);
-  }
-
-  state.selectedPlanId = plan.id;
-  await refresh();
-
-  // Navigate to Spec tab so user can review before generating tasks
-  if (hasSpec) {
-    _switchTab('spec');
-  }
-
-  if (withGenerate) {
     if (hasSpec) {
-      refineAndGenerate(plan.id);
+      const spec = _buildSpec(name, goal, context, requirements, constraints, outOfScope);
+      await api.saveSpec(plan.id, spec);
+    }
+
+    state.selectedPlanId = plan.id;
+    await refresh();
+
+    if (hasSpec) _switchTab('spec');
+
+    if (withGenerate) {
+      if (hasSpec) refineAndGenerate(plan.id);
+      else generateTasks(plan.id);
+    }
+  } else {
+    // task or debug
+    const descId = trackType === 'debug' ? 'debug-description' : 'task-description';
+    const description = $id(descId).value.trim();
+    const subtypes = [];
+    if (trackType === 'task') {
+      if ($id('task-subtype-test').checked) subtypes.push('test');
+      if ($id('task-subtype-doc').checked) subtypes.push('doc');
     } else {
-      generateTasks(plan.id);
+      if ($id('debug-subtype-regression').checked) subtypes.push('regression');
+    }
+
+    closeModal();
+    const plan = await api.createTrack(name, trackType);
+    if (!plan || !plan.id) { await refresh(); return; }
+
+    state.selectedPlanId = plan.id;
+    await refresh();
+
+    if (withGenerate && description) {
+      await generateTasksFromTemplate(plan.id, trackType, description, subtypes);
     }
   }
+}
+
+async function generateTasksFromTemplate(planId, trackType, description, subtypes) {
+  const result = await api.generateTemplate(planId, description, subtypes);
+  if (!result) return;
+  const titles = (result.tasks || []).map(t => `  • ${t.title}`).join('\n');
+  showToast(`✓ ${result.count} tasks created`);
+  await refresh();
+  _switchTab('tasks');
 }
 
 function _switchTab(tabName) {
@@ -1492,8 +1590,147 @@ function setupResizableConsole() {
   });
 }
 
+// ── Themes ─────────────────────────────────────────────────────────────────
+const THEMES = {
+  dark: {
+    label: 'Dark',
+    swatch: '#141414',
+    css: {
+      '--bg': '#0d0d0d', '--bg2': '#141414', '--bg3': '#1a1a1a',
+      '--border': '#2a2a2a', '--text': '#e0e0e0', '--text-dim': '#666',
+      '--text-muted': '#999', '--green': '#3fb950', '--yellow': '#d29922',
+      '--red': '#f85149', '--blue': '#58a6ff', '--cyan': '#39c5cf',
+      '--purple': '#bc8cff',
+    },
+    term: { background: '#0d0d0d', foreground: '#e0e0e0', cursor: '#39c5cf', selection: '#2a4a5a' },
+  },
+  light: {
+    label: 'Light',
+    swatch: '#f5f5f0',
+    css: {
+      '--bg': '#f5f5f0', '--bg2': '#ececea', '--bg3': '#e3e3e0',
+      '--border': '#d0d0cc', '--text': '#1a1a1a', '--text-dim': '#888',
+      '--text-muted': '#555', '--green': '#1a7f37', '--yellow': '#9a6700',
+      '--red': '#cf222e', '--blue': '#0550ae', '--cyan': '#1b7c83',
+      '--purple': '#7a3e9d',
+    },
+    term: { background: '#f5f5f0', foreground: '#1a1a1a', cursor: '#1b7c83', selection: '#c8e1e4' },
+  },
+  pastelOrange: {
+    label: 'Pastel Orange',
+    swatch: '#2e2a26',
+    css: {
+      '--bg': '#1e1b18', '--bg2': '#26221e', '--bg3': '#2e2a24',
+      '--border': '#3d3830', '--text': '#e8e0d4', '--text-dim': '#6e6358',
+      '--text-muted': '#a89880', '--green': '#6ab06a', '--yellow': '#e0945a',
+      '--red': '#e06a5a', '--blue': '#7aaedd', '--cyan': '#7ac4c0',
+      '--purple': '#c4a0e0',
+    },
+    term: { background: '#1e1b18', foreground: '#e8e0d4', cursor: '#e0945a', selection: '#3d3020' },
+  },
+  pastelViolet: {
+    label: 'Pastel Violet',
+    swatch: '#221e2e',
+    css: {
+      '--bg': '#181620', '--bg2': '#201e2c', '--bg3': '#282638',
+      '--border': '#363250', '--text': '#dcd8ec', '--text-dim': '#6a6480',
+      '--text-muted': '#9a94b8', '--green': '#7acc88', '--yellow': '#d4b06a',
+      '--red': '#e07a88', '--blue': '#7aaae0', '--cyan': '#7ac4d4',
+      '--purple': '#c0a0f0',
+    },
+    term: { background: '#181620', foreground: '#dcd8ec', cursor: '#c0a0f0', selection: '#362850' },
+  },
+  nord: {
+    label: 'Nord',
+    swatch: '#2e3440',
+    css: {
+      '--bg': '#242933', '--bg2': '#2e3440', '--bg3': '#363d4a',
+      '--border': '#434c5e', '--text': '#eceff4', '--text-dim': '#616e88',
+      '--text-muted': '#9099a8', '--green': '#a3be8c', '--yellow': '#ebcb8b',
+      '--red': '#bf616a', '--blue': '#81a1c1', '--cyan': '#88c0d0',
+      '--purple': '#b48ead',
+    },
+    term: { background: '#242933', foreground: '#eceff4', cursor: '#88c0d0', selection: '#434c5e' },
+  },
+  solarized: {
+    label: 'Solarized',
+    swatch: '#002b36',
+    css: {
+      '--bg': '#002b36', '--bg2': '#073642', '--bg3': '#0d4050',
+      '--border': '#1a5060', '--text': '#e0ddd0', '--text-dim': '#4a6070',
+      '--text-muted': '#6a8090', '--green': '#859900', '--yellow': '#b58900',
+      '--red': '#dc322f', '--blue': '#268bd2', '--cyan': '#2aa198',
+      '--purple': '#6c71c4',
+    },
+    term: { background: '#002b36', foreground: '#e0ddd0', cursor: '#2aa198', selection: '#1a4050' },
+  },
+};
+
+let _themeProjectKey = 'arche-theme-default';
+
+function _themeKey() { return _themeProjectKey; }
+
+function applyTheme(themeId) {
+  const theme = THEMES[themeId] || THEMES.dark;
+  const root = document.documentElement;
+  Object.entries(theme.css).forEach(([k, v]) => root.style.setProperty(k, v));
+  // Update xterm theme
+  Object.assign(TERM_OPTS.theme, theme.term);
+  state.terminals.forEach(({ term }) => {
+    try { term.options.theme = { ...theme.term }; } catch (_) {}
+  });
+  // Update active indicator in modal
+  document.querySelectorAll('.theme-option').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.themeId === themeId);
+  });
+  localStorage.setItem(_themeKey(), themeId);
+}
+
+function _buildThemeModal() {
+  const list = $id('theme-options-list');
+  list.innerHTML = Object.entries(THEMES).map(([id, t]) => `
+    <button class="theme-option" data-theme-id="${id}" onclick="applyTheme('${id}');closeThemeModal()">
+      <span class="theme-swatch" style="background:${t.swatch}"></span>${t.label}
+    </button>`).join('');
+}
+
+function openThemeModal() {
+  // Update active indicator
+  document.querySelectorAll('.theme-option').forEach(btn => {
+    const saved = localStorage.getItem(_themeKey()) || 'dark';
+    btn.classList.toggle('active', btn.dataset.themeId === saved);
+  });
+  $id('modal-theme-overlay').classList.remove('hidden');
+}
+
+function closeThemeModal() {
+  $id('modal-theme-overlay').classList.add('hidden');
+}
+
+function _initThemeListeners() {
+  _buildThemeModal();
+  // Apply a quick default; setupTheme() will refine once project name is known
+  const earlyKey = Object.keys(localStorage).find(k => k.startsWith('arche-theme-'));
+  const earlyTheme = earlyKey ? localStorage.getItem(earlyKey) : null;
+  applyTheme(earlyTheme && THEMES[earlyTheme] ? earlyTheme : 'dark');
+
+  $id('btn-theme').addEventListener('click', openThemeModal);
+  $id('theme-close').addEventListener('click', closeThemeModal);
+  $id('modal-theme-overlay').addEventListener('click', (e) => {
+    if (e.target === $id('modal-theme-overlay')) closeThemeModal();
+  });
+}
+
+function setupTheme(projectName) {
+  _themeProjectKey = `arche-theme-${projectName || 'default'}`;
+  const saved = localStorage.getItem(_themeKey());
+  if (saved && THEMES[saved]) applyTheme(saved);
+}
+
 // ── Boot ───────────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', init);
+window.applyTheme = applyTheme;
+window.closeThemeModal = closeThemeModal;
 
 // Expose for inline handlers
 window.markTaskDone = markTaskDone;
@@ -1506,6 +1743,7 @@ window.openEditTask = openEditTask;
 window.openDoneModal = openDoneModal;
 window.selectTerminal = selectTerminal;
 window.removeTerminal = removeTerminal;
+window.addTerminal = addTerminal;
 window.uiRunTask = uiRunTask;
 window.uiSelectTask = uiSelectTask;
 window.uiEditTask = uiEditTask;

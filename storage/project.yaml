@@ -1,0 +1,13 @@
+available_clis:
+- claude
+- gemini
+description: help to develop in vibe coding
+models:
+  debug: gemini-3-flash
+  dev: gemini-3-flash
+  doc: gemini-3-flash
+  plan: gemini-3-pro
+  review: gemini-3-flash
+  spec: gemini-3-pro
+name: arche
+stack: Python

@@ -80,10 +80,13 @@ def list_tracks() -> list[dict]:
         return []
     plans = []
     for d in sorted(TRACKS_DIR.iterdir()):
+        if not d.is_dir():
+            continue
         meta_path = d / "meta.yaml"
         if meta_path.exists():
             meta = load_yaml(meta_path)
-            plans.append(meta)
+            if meta.get("id"):
+                plans.append(meta)
     # Sort: ACTIVE first, then PAUSED, then DONE; within same status by created_at desc
     order = {STATUS_ACTIVE: 0, STATUS_PAUSED: 1, STATUS_DONE: 2}
     plans.sort(key=lambda p: (order.get(p.get("status", STATUS_PAUSED), 1), p.get("created_at", "")))
@@ -111,7 +114,7 @@ def get_active_track() -> Optional[dict]:
     return get_track(track_id)
 
 
-def new_track(name: str, phase: str = "spec") -> dict:
+def new_track(name: str, phase: str = "spec", track_type: str = "feature") -> dict:
     """Create a new plan and set it as active (pausing previous active)."""
     track_id = _slugify(name)
     # Ensure unique id
@@ -124,6 +127,7 @@ def new_track(name: str, phase: str = "spec") -> dict:
         "name": name,
         "status": STATUS_ACTIVE,
         "phase": phase,
+        "track_type": track_type,
         "created_at": now,
         "updated_at": now,
     }

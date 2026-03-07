@@ -9,7 +9,7 @@ from core.track_manager import (
     load_project,
     load_yaml,
 )
-from core.scanner import get_global_archi
+from core.scanner import get_global_archi, get_global_memory, GLOBAL_MEMORY_PATH
 from core.session_logger import get_session_log, list_sessions
 from core.task_engine import STATUS_DONE, STATUS_IN_PROGRESS, STATUS_TODO, load_tasks
 
@@ -26,10 +26,16 @@ def get_archi(track_id: str) -> str:
 def append_archi(track_id: str, notes: str) -> None:
     """Ajoute des notes à archi.md (crée le fichier si besoin)."""
     from datetime import datetime
+    now = datetime.now().strftime('%Y-%m-%d %H:%M')
     path = _archi_path(track_id)
-    header = f"\n\n---\n*{datetime.now().strftime('%Y-%m-%d %H:%M')}*\n\n"
+    header = f"\n\n---\n*{now}*\n\n"
     with open(path, "a") as f:
         f.write(header + notes.strip() + "\n")
+    # Propagate to global cross-track memory
+    memory_header = f"\n\n---\n*{now}* | track: {track_id}\n\n"
+    GLOBAL_MEMORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(GLOBAL_MEMORY_PATH, "a") as f:
+        f.write(memory_header + notes.strip() + "\n")
 
 
 def build_task_prompt(track_id: str, track_meta: dict, comment: str = "") -> str:
@@ -38,6 +44,7 @@ def build_task_prompt(track_id: str, track_meta: dict, comment: str = "") -> str
     tasks = load_tasks(track_id)
     spec = get_spec(track_id)
     global_archi = get_global_archi()
+    global_memory = get_global_memory()
     archi = get_archi(track_id)
 
     # Tâche courante
@@ -69,6 +76,9 @@ def build_task_prompt(track_id: str, track_meta: dict, comment: str = "") -> str
 
     if global_archi and global_archi.strip():
         parts.append(f"## Architecture du projet (référence globale)\n\n{global_archi}")
+
+    if global_memory and global_memory.strip():
+        parts.append(f"## Mémoire partagée (découvertes cross-track)\n\n{global_memory}")
 
     if archi and archi.strip():
         parts.append(f"## Notes d'architecture du track\n\n{archi}")
