@@ -908,6 +908,7 @@ function runTask(planId, taskId, comment = '', autoDone = true) {
     return;
   }
   taskTerminal.term.clear();
+  taskTerminal.term.write('⏳ Preparing task execution...\n');
   console.log('[runTask] Terminal created and selected:', taskTerminal.id);
 
   const params = new URLSearchParams();
