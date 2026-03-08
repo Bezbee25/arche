@@ -1,0 +1,15 @@
+phases:
+- created_at: '2026-03-08T20:40:49.070725'
+  depends_on: []
+  description: Create the `/api/chatbot/chat` streaming endpoint that builds the prompt
+    (archi.md + chat history + question), selects the LLM from setup config (defaulting
+    to dev LLM), and streams the response.
+  id: 30f264b1
+  name: Backend Chatbot API
+- created_at: '2026-03-08T20:40:49.072720'
+  depends_on:
+  - 30f264b1
+  description: Add a retractable right-column panel with chat history display, input
+    box, and streaming response rendering, wired to the backend API.
+  id: 11c20ce4
+  name: Frontend Chatbot Panel

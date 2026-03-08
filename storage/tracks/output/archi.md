@@ -90,3 +90,41 @@
 3. **État `state.outputText`** : Toujours accumulé en mémoire pour backward-compat, mais n'est plus affiché nulle part (l'output pane est vide).
 
 4. **Onglet Output** : Reste accessible pour les cas d'usage de l'interview (Q&A), génération de templates, et actions de review. L'utilisateur peut toujours cliquer sur cet onglet, il affiche simplement les panneaux interview/review sans output à la place.
+
+
+---
+*2026-03-08 17:04*
+
+**Problème identifié**: Le rapport "output is still in the task tab and no output is added to the terminal" suggère que le système de streaming vers les terminaux dédiés ne fonctionne pas comme prévu. Les causes probables:
+1. **CLI claude non disponible** → subprocess échoue silencieusement
+2. **Erreur lors de la création du subprocess** → exception non loggée
+3. **EventSource non connectée** → erreur réseau ou CORS
+4. **Terminal créé mais invisible** → console effondrée ou autre problème d'affichage
+
+**Approche de debug**: Plutôt que de specular, j'ai ajouté des logs exhaustifs à chaque étape du pipeline frontend et backend, permettant à l'utilisateur de tracer exactement où le problème se situe. Cela suit le principe "ne pas deviner, mesurer".
+
+**Pattern utilisé**: 
+- Frontend: logs avec prefix `[runTask]` 
+- Backend: logs avec prefix `[stream_task_run]`
+- Logs serveur console directement (pas de fichier) pour la visibilité immédiate
+- Guide PDF pour l'utilisateur pour naviguer les logs
+
+**Points d'attention pour les prochaines tâches**:
+1. Une fois le problème débogué, supprimer les logs de débogage
+2. Conserver le message UI "⏳ Preparing task execution..." pour la UX
+3. Considérer ajouter une UI pour afficher les erreurs directement (au lieu que seulement dans la console)
+4. Documenter le process de test pour éviter les régressions futures
+
+
+---
+*2026-03-08 17:10*
+
+**Patterns importants** :
+- Les terminaux de tâche partagent maintenant une propriété `taskTitle` qui contient le nom d'affichage (premiers 4 mots du titre)
+- xterm.js `wordWrap: true` gère automatiquement le re-wrapping lors du redimensionnement du conteneur grâce à `FitAddon`
+- Les titres sont extraits de `state.currentPlan.tasks` au moment du run, ce qui assure la synchronisation avec l'état courant
+
+**Points d'attention pour les tâches suivantes** :
+- Tester manuellement que le word-wrap fonctionne correctement lors du redimensionnement de la fenêtre
+- Vérifier que la navigation entre tracks ne casse pas le rendu des terminaux existants
+- Si un utilisateur change le titre d'une tâche, le terminal conservera son titre initial (comportement attendu, pas besoin de le mettre à jour en live)

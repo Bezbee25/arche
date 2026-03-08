@@ -154,6 +154,37 @@ def _build_command(
     return ["claude", "-p"]
 
 
+def _build_interactive_command(
+    cli: str,
+    model: str,
+    system: Optional[str],
+    allowed_tools: list[str],
+) -> list[str]:
+    """Build the CLI command for interactive PTY use (no batch/print flags).
+
+    The resulting command is meant to run in a real terminal where the user
+    can interact with the LLM if it asks questions.
+    """
+    if cli == "claude":
+        cmd = ["claude", "--model", model]
+        if system:
+            cmd += ["--system-prompt", system]
+        if allowed_tools:
+            cmd += ["--allowedTools", ",".join(allowed_tools)]
+        return cmd
+
+    elif cli == "gemini":
+        return ["gemini", "--model", model, "-y"]
+
+    elif cli == "codex":
+        return ["codex"]
+
+    elif cli == "vibe":
+        return ["vibe"]
+
+    return ["claude"]
+
+
 def _run_streaming(cmd: list[str], prompt: str) -> str:
     """Run command with prompt on stdin, stream stdout, return full output."""
     output_lines = []

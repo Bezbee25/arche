@@ -17,6 +17,7 @@ const state = {
   outputEventSource: null,
   _outputMeta: '',
   _outputDone: false,   // true after first __DONE__ received (prevents placeholder reset)
+  _outputTerminal: null, // streaming terminal for generation operations
   editingTask: null,
   doneTask: null,
   blockTask: null,
@@ -67,7 +68,7 @@ const api = {
   switchTrack: (id) => apiFetch('/api/tracks/switch', { method: 'POST', body: JSON.stringify({ track_id: id }) }),
   doneTrack: (id) => apiFetch(`/api/tracks/${id}/done`, { method: 'POST' }),
   nextTask: (trackId) => apiFetch(`/api/tracks/${trackId}/tasks/next`, { method: 'POST' }),
-  addTask: (trackId, title) => apiFetch(`/api/tracks/${trackId}/tasks`, { method: 'POST', body: JSON.stringify({ title }) }),
+  addTask: (trackId, title, phaseId = '') => apiFetch(`/api/tracks/${trackId}/tasks`, { method: 'POST', body: JSON.stringify({ title, phase_id: phaseId }) }),
   doneTask: (trackId, taskId, notes = '') => apiFetch(`/api/tracks/${trackId}/tasks/done`, { method: 'POST', body: JSON.stringify({ task_id: taskId, notes }) }),
   blockTask: (trackId, taskId, reason) => apiFetch(`/api/tracks/${trackId}/tasks/block`, { method: 'POST', body: JSON.stringify({ task_id: taskId, reason }) }),
   selectTask: (trackId, taskId) => apiFetch(`/api/tracks/${trackId}/tasks/${taskId}/select`, { method: 'POST' }),
@@ -118,9 +119,14 @@ async function init() {
   setupResizableConsole();
   setupEventListeners();  // registers theme listeners synchronously
   try { setupTerminal(); } catch (e) { console.error('Terminal init failed', e); }
-  // Fetch project so theme key is scoped to the project
+  // Fetch project and apply server-side saved theme
   const project = await api.getProject();
   setupTheme(project ? (project.name || 'default') : 'default');
+  // Override with server-persisted theme (takes priority over localStorage)
+  try {
+    const ts = await apiFetch('/api/settings/theme');
+    if (ts && ts.theme) applyTheme(ts.theme);
+  } catch (_) {}
   await refresh();
   setupScrollDetection();
   startPolling();
@@ -142,8 +148,9 @@ async function refresh() {
       state.selectedPlanId = activePlan.id;
     }
 
-    // Skip panel re-render if user is scrolling
+    // Skip panel re-render if user is scrolling or has a dropdown open
     if (state._autoRefreshBlocked) return;
+    if (document.activeElement?.matches('.task-inline-status, .task-inline-type')) return;
 
     if (state.selectedPlanId) {
       await renderPanelFor(state.selectedPlanId);
@@ -274,8 +281,7 @@ function renderTasks(plan) {
     pane.innerHTML = `
       <div class="empty-state">
         No tasks yet.<br>
-        <button class="btn-primary" style="margin-top:12px" onclick="generatePhases('${planId}')">⚡ Generate phases &amp; tasks</button>
-        <button class="btn-ghost btn-sm" style="margin-top:8px;display:block" onclick="refineAndGenerate('${planId}')">⚡ Generate tasks (no phases)</button>
+        <button class="btn-primary" style="margin-top:12px" onclick="refineAndGenerate('${planId}')">⚡ Generate tasks</button>
       </div>`;
     return;
   }
@@ -304,9 +310,21 @@ function renderTasks(plan) {
     const bulkIndex = state.bulkSelectedTaskIds.indexOf(t.id) + 1; // 1-based
     const rowClass = `task-item${isUiSelected ? ' ui-selected' : ''}${isBulkSelected ? ' bulk-selected' : ''}`;
     const titleClass = status === 'DONE' ? 'done' : status === 'IN_PROGRESS' ? 'active' : '';
-    const label = TASK_LABELS[status];
-    const badge = label ? `<span class="task-badge task-badge-${status.toLowerCase()}">${label}</span>` : '';
+    const taskType = t.type || 'dev';
     const bulkNumber = isBulkSelected ? `<span class="bulk-number">${bulkIndex}</span>` : '';
+    const inlineType = `
+      <select class="task-inline-type" data-task-id="${t.id}" data-plan-id="${planId}">
+        <option value="dev"   ${taskType === 'dev'   ? 'selected' : ''}>⌨ dev</option>
+        <option value="debug" ${taskType === 'debug' ? 'selected' : ''}>⚙ debug</option>
+        <option value="doc"   ${taskType === 'doc'   ? 'selected' : ''}>✎ doc</option>
+      </select>`;
+    const inlineStatus = `
+      <select class="task-inline-status task-inline-status-${status.toLowerCase()}" data-task-id="${t.id}" data-plan-id="${planId}" data-title="${escHtml(t.title || '')}">
+        <option value="TODO" ${status === 'TODO' ? 'selected' : ''}>· Todo</option>
+        <option value="IN_PROGRESS" ${status === 'IN_PROGRESS' ? 'selected' : ''}>▶ In Progress</option>
+        <option value="DONE" ${status === 'DONE' ? 'selected' : ''}>✓ Done</option>
+        <option value="BLOCKED" ${status === 'BLOCKED' ? 'selected' : ''}>✗ Blocked</option>
+      </select>`;
 
     return `
       <div class="${rowClass}" data-task-id="${t.id}" data-plan-id="${planId}">
@@ -316,11 +334,13 @@ function renderTasks(plan) {
           ${t.description ? `<div class="task-desc">${escHtml(t.description)}</div>` : ''}
           ${t.blocked_reason ? `<div class="task-desc blocked-reason">↳ ${escHtml(t.blocked_reason)}</div>` : ''}
         </div>
-        ${badge}
+        ${inlineType}
+        ${inlineStatus}
         <div class="task-checkbox-wrapper">
           ${bulkNumber}
           <input type="checkbox" class="task-checkbox" data-task-id="${t.id}" ${isBulkSelected ? 'checked' : ''}>
         </div>
+        <button class="task-delete-btn btn-danger-ghost" title="Delete task" onclick="event.stopPropagation();uiDeleteTask('${planId}','${t.id}','${escHtml(t.title||'')}')">✕</button>
       </div>`;
   }).join('');
 
@@ -341,50 +361,36 @@ function renderTasks(plan) {
   const dis = (noSel || !isActive) ? ' disabled' : '';
   const disLlm = (!isActive) ? ' disabled' : dis;
 
-  // Status dropdown options
-  const statusOptions = [
-    { value: 'TODO', label: 'Todo', icon: '·' },
-    { value: 'IN_PROGRESS', label: 'In Progress', icon: '▶' },
-    { value: 'DONE', label: 'Done', icon: '✓' },
-    { value: 'BLOCKED', label: 'Blocked', icon: '✗' },
-  ];
-  const currentStatus = (uiTask && uiTask.status) || 'TODO';
-  const statusDropdown = `
-    <select class="task-status-dropdown" id="task-status-select" ${noSel || !isActive ? 'disabled' : ''} onchange="handleStatusChange(this.value)">
-      ${statusOptions.map(opt =>
-        `<option value="${opt.value}" ${currentStatus === opt.value ? 'selected' : ''}>${opt.icon} ${opt.label}</option>`
-      ).join('')}
-    </select>`;
-
   // Select all / deselect all button
   const selectAllBtn = hasBulkSelection
     ? `<button class="task-action-btn btn-deselect-all" onclick="clearBulkSelection()">✕ Deselect All</button>`
     : `<button class="task-action-btn btn-select-all" onclick="selectAllTasks('${planId}')">☑ Select All</button>`;
 
-  // Run button label shows "Run" for single, "Run N" for bulk
-  const runLabel = hasBulkSelection ? `⇒ Run ${hasBulkSelection}` : '▶ Run';
-  const runTitle = hasBulkSelection
-    ? `Execute ${hasBulkSelection} selected task${hasBulkSelection > 1 ? 's' : ''} in sequence`
+  // Run button label shows "Run N" for bulk or "Run" for single
+  const bulkCount = state.bulkSelectedTaskIds.length;
+  const runLabel = bulkCount > 0 ? `⇒ Run ${bulkCount}` : '▶ Run';
+  const runTitle = bulkCount > 0
+    ? `Execute ${bulkCount} selected task${bulkCount > 1 ? 's' : ''} in sequence`
     : isActive ? 'Run selected task' : 'Only available on active track';
 
   const actionBar = `
     <div class="task-action-bar">
       <div class="action-buttons">
+        <button class="task-action-btn btn-add" title="Add task" onclick="openAddTaskModal('${planId}')">+ Add task</button>
+        <button class="task-action-btn btn-edit" title="Edit"${dis} onclick="uiEditTask()">✎ Edit</button>
         <button class="task-action-btn btn-run" title="${runTitle}"${disLlm} onclick="uiRunTask()">${runLabel}</button>
+        <button class="task-action-btn btn-review" title="${isActive ? 'Review' : 'Only available on active track'}"${disLlm} onclick="uiReviewTask()">⊙ Review</button>
+      </div>
+      <div class="secondary-controls">
         <label class="auto-done-label" title="Mark task as done when run completes">
           <input type="checkbox" id="action-auto-done" checked>
           Auto-done
         </label>
-        <button class="task-action-btn btn-edit" title="Edit"${dis} onclick="uiEditTask()">✎ Edit</button>
-        ${statusDropdown}
-        <button class="task-action-btn btn-review" title="${isActive ? 'Review' : 'Only available on active track'}"${disLlm} onclick="uiReviewTask()">⊙ Review</button>
-        <button class="task-action-btn btn-add" title="Add task" onclick="openAddTaskModal('${planId}')">+ Add</button>
-      </div>
-      <div class="selection-controls">
         ${selectAllBtn}
       </div>
     </div>`;
 
+  const _savedScroll = pane.querySelector('.tasks-scroll')?.scrollTop || 0;
   pane.innerHTML = `
     <div class="tasks-toolbar-wrap">
       <div class="tasks-toolbar">
@@ -395,6 +401,7 @@ function renderTasks(plan) {
     <div class="tasks-scroll">
       <div class="tasks-list">${taskRows || '<div class="empty-state" style="padding:20px 0">No tasks match this filter.</div>'}</div>
     </div>`;
+  if (_savedScroll) pane.querySelector('.tasks-scroll').scrollTop = _savedScroll;
 
   // Filter buttons
   pane.querySelectorAll('.filter-btn').forEach(btn => {
@@ -430,6 +437,26 @@ function renderTasks(plan) {
       renderTasks(plan);
     });
   });
+
+  // Inline status selects — prevent row click propagation, handle status change
+  pane.querySelectorAll('.task-inline-status').forEach(sel => {
+    sel.addEventListener('click', e => e.stopPropagation());
+    sel.addEventListener('change', async e => {
+      e.stopPropagation();
+      const { taskId, planId: pid, title } = sel.dataset;
+      await handleTaskStatusChange(pid, taskId, e.target.value, title);
+    });
+  });
+
+  // Inline type selects — save task type directly
+  pane.querySelectorAll('.task-inline-type').forEach(sel => {
+    sel.addEventListener('click', e => e.stopPropagation());
+    sel.addEventListener('change', async e => {
+      e.stopPropagation();
+      const { taskId, planId: pid } = sel.dataset;
+      await api.updateTask(pid, taskId, { type: e.target.value });
+    });
+  });
 }
 
 // ── Bulk selection helpers ──────────────────────────────────────────────────
@@ -462,45 +489,32 @@ function renderTasksWithPhases(plan, phases) {
   const disLlm = (!isActive) ? ' disabled' : dis;
   const hasBulkSelection = state.bulkSelectedTaskIds.length > 0;
 
-  // Status dropdown options
-  const statusOptions = [
-    { value: 'TODO', label: 'Todo', icon: '·' },
-    { value: 'IN_PROGRESS', label: 'In Progress', icon: '▶' },
-    { value: 'DONE', label: 'Done', icon: '✓' },
-    { value: 'BLOCKED', label: 'Blocked', icon: '✗' },
-  ];
-  const currentStatus = (uiTask && uiTask.status) || 'TODO';
-  const statusDropdown = `
-    <select class="task-status-dropdown" id="task-status-select" ${noSel || !isActive ? 'disabled' : ''} onchange="handleStatusChange(this.value)">
-      ${statusOptions.map(opt =>
-        `<option value="${opt.value}" ${currentStatus === opt.value ? 'selected' : ''}>${opt.icon} ${opt.label}</option>`
-      ).join('')}
-    </select>`;
-
   // Select all / deselect all button
   const selectAllBtn = hasBulkSelection
     ? `<button class="task-action-btn btn-deselect-all" onclick="clearBulkSelection()">✕ Deselect All</button>`
     : `<button class="task-action-btn btn-select-all" onclick="selectAllTasks('${planId}')">☑ Select All</button>`;
 
-  // Run button label shows "Run" for single, "Run N" for bulk
-  const runLabel = hasBulkSelection ? `⇒ Run ${hasBulkSelection}` : '▶ Run';
-  const runTitle = hasBulkSelection
-    ? `Execute ${hasBulkSelection} selected task${hasBulkSelection > 1 ? 's' : ''} in sequence`
+  // Run button label shows "Run N" for bulk or "Run" for single
+  const bulkCount = state.bulkSelectedTaskIds.length;
+  const runLabel = bulkCount > 0 ? `⇒ Run ${bulkCount}` : '▶ Run';
+  const runTitle = bulkCount > 0
+    ? `Execute ${bulkCount} selected task${bulkCount > 1 ? 's' : ''} in sequence`
     : isActive ? 'Run selected task' : 'Only available on active track';
 
   const actionBar = `
     <div class="task-action-bar">
       <div class="action-buttons">
+        <button class="task-action-btn btn-add" title="Add phase" onclick="openNewPhaseModal('${planId}')">+ Add Phase</button>
+        <button class="task-action-btn btn-add" title="Add task" onclick="openAddTaskModal('${planId}')">+ Add task</button>
+        <button class="task-action-btn btn-edit" title="Edit"${dis} onclick="uiEditTask()">✎ Edit</button>
         <button class="task-action-btn btn-run" title="${runTitle}"${disLlm} onclick="uiRunTask()">${runLabel}</button>
+        <button class="task-action-btn btn-review" title="${isActive ? 'Review' : 'Only available on active track'}"${disLlm} onclick="uiReviewTask()">⊙ Review</button>
+      </div>
+      <div class="secondary-controls">
         <label class="auto-done-label" title="Mark task as done when run completes">
           <input type="checkbox" id="action-auto-done" checked>
           Auto-done
         </label>
-        <button class="task-action-btn btn-edit" title="Edit"${dis} onclick="uiEditTask()">✎ Edit</button>
-        ${statusDropdown}
-        <button class="task-action-btn btn-review" title="${isActive ? 'Review' : 'Only available on active track'}"${disLlm} onclick="uiReviewTask()">⊙ Review</button>
-      </div>
-      <div class="selection-controls">
         ${selectAllBtn}
       </div>
     </div>`;
@@ -527,9 +541,21 @@ function renderTasksWithPhases(plan, phases) {
       const isBulkSelected = state.bulkSelectedTaskIds.includes(t.id);
       const bulkIndex = state.bulkSelectedTaskIds.indexOf(t.id) + 1; // 1-based
       const titleClass = status === 'DONE' ? 'done' : status === 'IN_PROGRESS' ? 'active' : '';
-      const label = TASK_LABELS[status];
-      const badge = label ? `<span class="task-badge task-badge-${status.toLowerCase()}">${label}</span>` : '';
+      const taskType = t.type || 'dev';
       const bulkNumber = isBulkSelected ? `<span class="bulk-number">${bulkIndex}</span>` : '';
+      const inlineType = `
+        <select class="task-inline-type" data-task-id="${t.id}" data-plan-id="${planId}" ${isLocked ? 'disabled' : ''}>
+          <option value="dev"   ${taskType === 'dev'   ? 'selected' : ''}>⌨ dev</option>
+          <option value="debug" ${taskType === 'debug' ? 'selected' : ''}>⚙ debug</option>
+          <option value="doc"   ${taskType === 'doc'   ? 'selected' : ''}>✎ doc</option>
+        </select>`;
+      const inlineStatus = `
+        <select class="task-inline-status task-inline-status-${status.toLowerCase()}" data-task-id="${t.id}" data-plan-id="${planId}" data-title="${escHtml(t.title || '')}" ${isLocked ? 'disabled' : ''}>
+          <option value="TODO" ${status === 'TODO' ? 'selected' : ''}>· Todo</option>
+          <option value="IN_PROGRESS" ${status === 'IN_PROGRESS' ? 'selected' : ''}>▶ In Progress</option>
+          <option value="DONE" ${status === 'DONE' ? 'selected' : ''}>✓ Done</option>
+          <option value="BLOCKED" ${status === 'BLOCKED' ? 'selected' : ''}>✗ Blocked</option>
+        </select>`;
       return `
         <div class="task-item${isUiSelected ? ' ui-selected' : ''}${isBulkSelected ? ' bulk-selected' : ''}${isLocked ? ' task-locked' : ''}" data-task-id="${t.id}" data-plan-id="${planId}">
           <div class="task-icon ${status.toLowerCase()}">${icon}</div>
@@ -537,11 +563,13 @@ function renderTasksWithPhases(plan, phases) {
             <div class="task-title ${titleClass}">${escHtml(t.title || '')}</div>
             ${t.description ? `<div class="task-desc">${escHtml(t.description)}</div>` : ''}
           </div>
-          ${badge}
+          ${inlineType}
+          ${inlineStatus}
           <div class="task-checkbox-wrapper">
             ${bulkNumber}
             <input type="checkbox" class="task-checkbox" data-task-id="${t.id}" ${isBulkSelected ? 'checked' : ''} ${isLocked ? 'disabled' : ''}>
           </div>
+          <button class="task-delete-btn btn-danger-ghost" title="Delete task" onclick="event.stopPropagation();uiDeleteTask('${planId}','${t.id}','${escHtml(t.title||'')}')">✕</button>
         </div>`;
     }).join('');
 
@@ -562,8 +590,10 @@ function renderTasksWithPhases(plan, phases) {
           </span>
           <span class="phase-actions">
             ${!isLocked && phaseTasks.length === 0 ? `<button class="btn-ghost btn-sm" onclick="generateTasksForPhase('${planId}','${ph.id}')">⚡ Tasks</button>` : ''}
+            <button class="btn-ghost btn-sm btn-danger-ghost" title="Delete phase and all its tasks" onclick="uiDeletePhase('${planId}','${ph.id}','${escHtml(ph.name)}')">✕</button>
           </span>
         </div>
+        ${ph.description ? `<div class="phase-description">${escHtml(ph.description)}</div>` : ''}
         <div class="phase-tasks${isLocked ? ' phase-tasks-locked' : ''}">
           ${taskRows || emptyState}
         </div>
@@ -574,13 +604,12 @@ function renderTasksWithPhases(plan, phases) {
     <div class="tasks-toolbar-wrap">
       <div class="tasks-toolbar">
         ${actionBar}
-        <button class="btn-ghost btn-sm" onclick="openAddTaskModal('${planId}')" title="Add task">+ Add</button>
-        <button class="btn-ghost btn-sm" onclick="openNewPhaseModal('${planId}')" title="Add phase">+ Phase</button>
-        <button class="btn-ghost btn-sm" onclick="generatePhases('${planId}')" title="Generate phases from spec">⚡ Phases</button>
       </div>
     </div>`;
 
+  const _savedScroll = pane.querySelector('.tasks-scroll')?.scrollTop || 0;
   pane.innerHTML = toolbar + `<div class="tasks-scroll"><div class="phase-list">${phaseSections}</div></div>`;
+  if (_savedScroll) pane.querySelector('.tasks-scroll').scrollTop = _savedScroll;
 
   // Bind task clicks (toggle UI selection when clicking on row body, not checkbox)
   pane.querySelectorAll('.task-item:not(.task-locked)').forEach(row => {
@@ -608,37 +637,67 @@ function renderTasksWithPhases(plan, phases) {
       renderTasksWithPhases(plan, phases);
     });
   });
+
+  // Inline status selects — prevent row click propagation, handle status change
+  pane.querySelectorAll('.task-inline-status').forEach(sel => {
+    sel.addEventListener('click', e => e.stopPropagation());
+    sel.addEventListener('change', async e => {
+      e.stopPropagation();
+      const { taskId, planId: pid, title } = sel.dataset;
+      await handleTaskStatusChange(pid, taskId, e.target.value, title);
+    });
+  });
+
+  // Inline type selects — save task type directly
+  pane.querySelectorAll('.task-inline-type').forEach(sel => {
+    sel.addEventListener('click', e => e.stopPropagation());
+    sel.addEventListener('change', async e => {
+      e.stopPropagation();
+      const { taskId, planId: pid } = sel.dataset;
+      await api.updateTask(pid, taskId, { type: e.target.value });
+    });
+  });
 }
 
 // ── Phase generation ─────────────────────────────────────────────────────────
 function generatePhases(planId) {
   state.outputText = '';
   state.outputRunning = true;
-  _switchToOutputTab();
-  _setOutputHeader('▶ Generating phases…', true);
-  renderOutputPane();
+  _openOutputTerminal(planId, '⚡ Gen phases');
+  _setOutputHeader('▶ Generating phases…');
 
   _startStream(`/api/tracks/${planId}/phases/generate`, {
-    onMeta: (t) => { _setOutputHeader('▶ ' + t, true); },
+    onMeta: (t) => { _setOutputHeader('▶ ' + t); },
     onText: _appendOutput,
-    onDone: () => { state.outputRunning = false; renderOutputPane(); refresh(); },
-    onError: () => { state.outputRunning = false; _appendOutput('\n⚠ Connection error'); renderOutputPane(); },
+    onDone: () => { state.outputRunning = false; refresh(); },
+    onError: () => { state.outputRunning = false; _appendOutput('\n⚠ Connection error\n'); },
   });
 }
 
 function generateTasksForPhase(planId, phaseId) {
   state.outputText = '';
   state.outputRunning = true;
-  _switchToOutputTab();
-  _setOutputHeader('▶ Generating tasks for phase…', true);
-  renderOutputPane();
+  _openOutputTerminal(planId, '⚡ Gen tasks');
+  _setOutputHeader('▶ Generating tasks for phase…');
 
   _startStream(`/api/tracks/${planId}/phases/${phaseId}/tasks/generate`, {
-    onMeta: (t) => { _setOutputHeader('▶ ' + t, true); },
+    onMeta: (t) => { _setOutputHeader('▶ ' + t); },
     onText: _appendOutput,
-    onDone: () => { state.outputRunning = false; renderOutputPane(); renderPanelFor(planId); },
-    onError: () => { state.outputRunning = false; _appendOutput('\n⚠ Connection error'); renderOutputPane(); },
+    onDone: () => { state.outputRunning = false; renderPanelFor(planId); },
+    onError: () => { state.outputRunning = false; _appendOutput('\n⚠ Connection error\n'); },
   });
+}
+
+async function uiDeleteTask(planId, taskId, taskTitle) {
+  if (!confirm(`Delete task "${taskTitle}"?`)) return;
+  await apiFetch(`/api/tracks/${planId}/tasks/${taskId}`, { method: 'DELETE' });
+  await renderPanelFor(planId);
+}
+
+async function uiDeletePhase(planId, phaseId, phaseName) {
+  if (!confirm(`Delete phase "${phaseName}" and all its tasks?`)) return;
+  await api.deletePhase(planId, phaseId);
+  await renderPanelFor(planId);
 }
 
 // ── New phase modal ──────────────────────────────────────────────────────────
@@ -704,6 +763,7 @@ async function renderSpec(planId) {
   pane.innerHTML = `
     <div class="spec-toolbar">
       <button class="btn-primary btn-sm" onclick="refineSpec('${planId}')">✦ Refine spec</button>
+      <button class="btn-ghost btn-sm" onclick="generatePhases('${planId}')">⚡ Generate phases</button>
       <button class="btn-ghost btn-sm" onclick="generateTasks('${planId}')">⚡ Generate tasks</button>
     </div>
     <pre class="spec-content">${escHtml(data.content)}</pre>`;
@@ -812,10 +872,23 @@ function handleStatusChange(newStatus) {
 }
 
 async function markTaskTodo(planId, taskId) {
-  // Simple update to reset status to TODO
   await api.updateTask(planId, taskId, { status: 'TODO' });
   await renderPanelFor(planId);
   await refreshSidebar();
+}
+
+async function handleTaskStatusChange(planId, taskId, newStatus, title = '') {
+  if (newStatus === 'DONE') {
+    openDoneModal(planId, taskId, title);
+  } else if (newStatus === 'BLOCKED') {
+    openBlockModal(planId, taskId, title);
+  } else if (newStatus === 'TODO') {
+    await markTaskTodo(planId, taskId);
+  } else if (newStatus === 'IN_PROGRESS') {
+    await api.updateTask(planId, taskId, { status: 'IN_PROGRESS' });
+    await renderPanelFor(planId);
+    await refreshSidebar();
+  }
 }
 
 // ── Legacy actions ───────────────────────────────────────────────────────────
@@ -864,19 +937,57 @@ function confirmRunTask() {
 
 // ── Streaming helpers ───────────────────────────────────────────────────────
 function _switchToOutputTab() {
-  document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
-  document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
-  const outTab = document.querySelector('.tab[data-tab="output"]');
-  if (outTab) outTab.classList.add('active');
-  const outPane = $id('tab-output');
-  if (outPane) outPane.classList.add('active');
-  state.activeTab = 'output';
+  // Output is now in the terminals section — ensure console is open
+  if (state.consoleCollapsed) {
+    $id('console-wrapper').classList.remove('collapsed');
+    state.consoleCollapsed = false;
+    $id('btn-console-toggle').textContent = '−';
+  }
 }
 
 function _appendOutput(text) {
-  // Output is now displayed in dedicated task terminals.
-  // This function is kept for backward compatibility but does nothing.
   state.outputText += text;
+  if (state._outputTerminal) {
+    state._outputTerminal.term.write(text.replace(/\r?\n/g, '\r\n'));
+  }
+}
+
+function _setOutputHeader(title) {
+  if (state._outputTerminal) {
+    state._outputTerminal.term.write(`\x1b[1m${title}\x1b[0m\r\n`);
+  }
+}
+
+/** Create (or reuse+clear) a streaming terminal for generation operations. */
+function _openOutputTerminal(opId, title) {
+  if (state.consoleCollapsed) {
+    $id('console-wrapper').classList.remove('collapsed');
+    state.consoleCollapsed = false;
+    $id('btn-console-toggle').textContent = '−';
+  }
+  const id = `-gen-${opId}`;
+  const existing = state.terminals.find(t => t.id === id);
+  if (existing) {
+    try { existing.term.clear(); } catch (_) {}
+    selectTerminal(id);
+    renderTerminalTabs();
+    state._outputTerminal = existing;
+    return existing;
+  }
+  const pane = document.createElement('div');
+  pane.className = 'terminal-pane';
+  pane.id = `term-pane-${id}`;
+  $id('terminal-container').appendChild(pane);
+  const term = new Terminal(TERM_OPTS);
+  const fitAddon = new FitAddon.FitAddon();
+  term.loadAddon(fitAddon);
+  term.open(pane);
+  const entry = { id, term, fitAddon, ws: null, pane, taskTitle: title };
+  state.terminals.push(entry);
+  selectTerminal(id);
+  renderTerminalTabs();
+  state._outputTerminal = entry;
+  return entry;
 }
 
 /** Start an SSE stream (GET). Callbacks: onMeta, onText, onDone, onError, onSignal */
@@ -1468,9 +1579,15 @@ function _connectTerminalWs(id, term, fitAddon, token = null) {
   const ws = new WebSocket(url);
   ws.binaryType = 'arraybuffer';
 
+  const sendResize = (cols, rows) => {
+    if (ws.readyState === WebSocket.OPEN)
+      ws.send(JSON.stringify({ type: 'resize', cols, rows }));
+  };
+
   ws.onopen = () => {
     if (id === state.activeTerminalId) _updateStatus('connected');
     try { fitAddon.fit(); } catch (_) {}
+    // fitAddon.fit() triggers term.onResize which sends the size below
   };
   ws.onmessage = (evt) => {
     const data = evt.data instanceof ArrayBuffer ? new Uint8Array(evt.data) : evt.data;
@@ -1487,6 +1604,8 @@ function _connectTerminalWs(id, term, fitAddon, token = null) {
   term.onData(data => {
     if (ws.readyState === WebSocket.OPEN) ws.send(new TextEncoder().encode(data));
   });
+  // Send terminal dimensions to server whenever xterm.js is resized (fitAddon.fit() triggers this)
+  term.onResize(({ cols, rows }) => sendResize(cols, rows));
 
   return ws;
 }
@@ -1704,15 +1823,14 @@ function _switchTab(tabName) {
 function generateTasks(planId) {
   state.outputText = '';
   state.outputRunning = true;
-  _switchToOutputTab();
-  _setOutputHeader('▶ Generating tasks…', true);
-  renderOutputPane();
+  _openOutputTerminal(planId, '⚡ Gen tasks');
+  _setOutputHeader('▶ Generating tasks…');
 
   _startStream(`/api/tracks/${planId}/tasks/generate`, {
-    onMeta: (t) => { _setOutputHeader('▶ ' + t, true); },
+    onMeta: (t) => { _setOutputHeader('▶ ' + t); },
     onText: _appendOutput,
-    onDone: () => { state.outputRunning = false; renderOutputPane(); refresh(); },
-    onError: () => { state.outputRunning = false; _appendOutput('\n⚠ Connection error'); renderOutputPane(); },
+    onDone: () => { state.outputRunning = false; refresh(); },
+    onError: () => { state.outputRunning = false; _appendOutput('\n⚠ Connection error\n'); },
   });
 }
 
@@ -1720,19 +1838,17 @@ function generateTasks(planId) {
 function refineSpec(planId) {
   state.outputText = '';
   state.outputRunning = true;
-  _switchToOutputTab();
-  _setOutputHeader('▶ Refining spec…', true);
-  renderOutputPane();
+  _openOutputTerminal(planId, '⚡ Refine spec');
+  _setOutputHeader('▶ Refining spec…');
 
   _startStream(`/api/tracks/${planId}/spec/refine`, {
-    onMeta: (t) => { _setOutputHeader('▶ ' + t, true); },
+    onMeta: (t) => { _setOutputHeader('▶ ' + t); },
     onText: _appendOutput,
     onDone: () => {
       state.outputRunning = false;
-      renderOutputPane();
       _switchTab('spec');
     },
-    onError: () => { state.outputRunning = false; _appendOutput('\n⚠ Connection error'); renderOutputPane(); },
+    onError: () => { state.outputRunning = false; _appendOutput('\n⚠ Connection error\n'); },
   });
 }
 
@@ -1740,24 +1856,23 @@ function refineSpec(planId) {
 function refineAndGenerate(planId) {
   state.outputText = '';
   state.outputRunning = true;
-  _switchToOutputTab();
-  _setOutputHeader('▶ Refining spec…', true);
-  renderOutputPane();
+  _openOutputTerminal(planId, '⚡ Refine+Gen');
+  _setOutputHeader('▶ Refining spec…');
 
   _startStream(`/api/tracks/${planId}/spec/refine`, {
-    onMeta: (t) => { _setOutputHeader('▶ ' + t, true); },
+    onMeta: (t) => { _setOutputHeader('▶ ' + t); },
     onText: _appendOutput,
     onDone: () => {
-      _appendOutput('\n\n────────────────────────────────────────\n');
-      _setOutputHeader('▶ Generating tasks…', true);
+      _appendOutput('\n────────────────────────────────────────\n');
+      _setOutputHeader('▶ Generating tasks…');
       _startStream(`/api/tracks/${planId}/tasks/generate`, {
-        onMeta: (t) => { _setOutputHeader('▶ ' + t, true); },
+        onMeta: (t) => { _setOutputHeader('▶ ' + t); },
         onText: _appendOutput,
-        onDone: () => { state.outputRunning = false; renderOutputPane(); refresh(); },
-        onError: () => { state.outputRunning = false; _appendOutput('\n⚠ Error during task generation'); renderOutputPane(); },
+        onDone: () => { state.outputRunning = false; refresh(); },
+        onError: () => { state.outputRunning = false; _appendOutput('\n⚠ Error during task generation\n'); },
       });
     },
-    onError: () => { state.outputRunning = false; _appendOutput('\n⚠ Error during spec refinement'); renderOutputPane(); },
+    onError: () => { state.outputRunning = false; _appendOutput('\n⚠ Error during spec refinement\n'); },
   });
 }
 
@@ -1891,6 +2006,19 @@ async function createReworkTask() {
 function openAddTaskModal(trackId) {
   state.addTaskTrackId = trackId;
   $id('add-task-title').value = '';
+
+  // Populate phase selector if the current plan has phases
+  const plan = (state._lastPlan && state._lastPlan.id === trackId) ? state._lastPlan : null;
+  const phases = (plan && plan.phases) ? plan.phases.filter(ph => ph.name) : [];
+  const phaseRow = $id('add-task-phase-row');
+  const phaseSelect = $id('add-task-phase');
+  if (phases.length > 0) {
+    phaseSelect.innerHTML = phases.map(ph => `<option value="${ph.id}">${escHtml(ph.name)}</option>`).join('');
+    phaseRow.classList.remove('hidden');
+  } else {
+    phaseRow.classList.add('hidden');
+  }
+
   $id('modal-add-task-overlay').classList.remove('hidden');
   setTimeout(() => $id('add-task-title').focus(), 50);
 }
@@ -1904,8 +2032,10 @@ async function confirmAddTask() {
   const title = $id('add-task-title').value.trim();
   if (!title || !state.addTaskTrackId) return;
   const trackId = state.addTaskTrackId;
+  const phaseRow = $id('add-task-phase-row');
+  const phaseId = !phaseRow.classList.contains('hidden') ? $id('add-task-phase').value : '';
   closeAddTaskModal();
-  const task = await api.addTask(trackId, title);
+  const task = await api.addTask(trackId, title, phaseId);
   if (task && task.id) {
     showToast(`✓ Task added: ${task.title}`);
   }
@@ -2084,6 +2214,8 @@ function applyTheme(themeId) {
     btn.classList.toggle('active', btn.dataset.themeId === themeId);
   });
   localStorage.setItem(_themeKey(), themeId);
+  // Persist on server so theme survives browser cache clears
+  apiFetch('/api/settings/theme', { method: 'POST', body: JSON.stringify({ theme: themeId }) }).catch(() => {});
 }
 
 function _buildThemeModal() {
@@ -2161,6 +2293,8 @@ window.refineSpec = refineSpec;
 window.refineAndGenerate = refineAndGenerate;
 window.generatePhases = generatePhases;
 window.generateTasksForPhase = generateTasksForPhase;
+window.uiDeleteTask = uiDeleteTask;
+window.uiDeletePhase = uiDeletePhase;
 window.openNewPhaseModal = openNewPhaseModal;
 window.closePhaseModal = closePhaseModal;
 window.confirmNewPhase = confirmNewPhase;

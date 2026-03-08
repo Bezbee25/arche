@@ -321,4 +321,7 @@ def delete_phase(track_id: str, phase_id: str) -> bool:
     if not new_phases:
         new_phases = [dict(_DEFAULT_PHASE)]
     save_phases(track_id, new_phases)
+    # Also delete all tasks belonging to this phase
+    from core.task_engine import delete_tasks_for_phase
+    delete_tasks_for_phase(track_id, phase_id)
     return True

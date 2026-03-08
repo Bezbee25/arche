@@ -70,9 +70,21 @@ tasks:
 - created_at: '2026-03-08T16:59:46.771066'
   description: ''
   id: ca98a3bb
-  notes: ''
+  notes: Auto-completed after successful run
   phase_id: ''
-  status: IN_PROGRESS
+  status: DONE
   title: debug, output is still in the task tab and no ouput is added to the terminal,
     and when i start a taks I see nothing
-  updated_at: '2026-03-08T17:00:43.130063'
+  updated_at: '2026-03-08T17:04:51.971656'
+- created_at: '2026-03-08T17:06:23.441913'
+  description: le titre n'est pas très bon il commence par '-' au lieu de task-' au
+    lieu de l'iD mets les 4 permiers mots du titre, + l'affichage du texte dans la
+    console output est décalé, ça ne prends pas en compte la taille du nombre de caractère
+    horizontol dispinible, il faut le prendre en compte + le tab 'ouput' est toujours
+    visible dans l'onlget 'tasks' il faut l'enlever
+  id: 83a7ed3c
+  notes: Auto-completed after successful run
+  phase_id: ''
+  status: DONE
+  title: problème avec l'affichage de l'ouput
+  updated_at: '2026-03-08T17:10:47.535816'

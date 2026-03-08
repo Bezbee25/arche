@@ -99,7 +99,8 @@ body {
   font-size: 13px;
 }
 
-.header-actions { margin-left: auto; display: flex; gap: 8px; }
+.header-actions { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.header-actions .btn-ghost { font-size: 18px; padding: 4px 8px; }
 
 /* ── App layout ─────────────────────────────────────── */
 #app {
@@ -328,9 +329,10 @@ body {
   align-items: center;
 }
 
-.selection-controls {
+.selection-controls, .secondary-controls {
   display: flex;
   gap: 6px;
+  align-items: center;
   justify-content: flex-end;
 }
 
@@ -406,6 +408,75 @@ body {
   background: var(--bg2);
   color: var(--text);
 }
+
+/* Per-task delete button */
+.task-delete-btn {
+  opacity: 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 5px;
+  border-radius: 3px;
+  flex-shrink: 0;
+  transition: opacity 0.1s;
+}
+.task-item:hover .task-delete-btn { opacity: 1; }
+
+/* Per-task inline type select (dev / debug / doc) */
+.task-inline-type {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 11px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  transition: background 0.1s, border-color 0.1s, color 0.1s;
+  appearance: none;
+  -webkit-appearance: none;
+}
+.task-inline-type:hover,
+.task-inline-type:focus {
+  background: var(--bg3);
+  border-color: var(--border);
+  color: var(--text);
+  outline: none;
+}
+.task-inline-type:disabled { opacity: 0.3; cursor: not-allowed; }
+.task-inline-type option { background: var(--bg2); color: var(--text); }
+
+/* Per-task inline status select */
+.task-inline-status {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  transition: background 0.1s, border-color 0.1s, color 0.1s;
+  appearance: none;
+  -webkit-appearance: none;
+}
+.task-inline-status:hover,
+.task-inline-status:focus {
+  background: var(--bg3);
+  border-color: var(--border);
+  color: var(--text);
+  outline: none;
+}
+.task-inline-status:disabled { opacity: 0.3; cursor: not-allowed; }
+.task-inline-status option { background: var(--bg2); color: var(--text); }
+
+.task-inline-status-todo        { color: var(--text-dim); }
+.task-inline-status-in_progress { color: var(--cyan); }
+.task-inline-status-done        { color: var(--text-dim); }
+.task-inline-status-blocked     { color: var(--red); }
 
 /* ── Tasks ──────────────────────────────────────────── */
 .tasks-list { display: flex; flex-direction: column; }
@@ -1135,6 +1206,7 @@ body {
 .phase-badge-locked { background: rgba(248,81,73,0.12); color: var(--red); }
 
 .phase-dep-info { font-size: 11px; color: var(--text-dim); font-style: italic; }
+.phase-description { font-size: 11px; color: var(--text-muted); padding: 2px 12px 8px; }
 
 .phase-progress-wrap {
   display: flex;

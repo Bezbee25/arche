@@ -8,14 +8,13 @@ tasks:
     le modifier, pour que qui est du select all, mets le en dessous des bouton d''action
     collé à droite'
   id: fd0b71e8
-  notes: 'Implementation completed:
-    - Unified Run button: automatically handles single task or bulk selection
-    - Replaced Done/Block buttons with status dropdown (Jira-style)
-    - Reorganized layout: action buttons (top) + select controls (bottom right)
-    - Added handleStatusChange() function for status dropdown routing
-    - Applied refactoring to both renderTasks() and renderTasksWithPhases()
-    - Commit: 9c14cd9 "Refactor action bar: unified run button, status dropdown, reorganized layout"'
+  notes: 'Implementation completed: - Unified Run button: automatically handles single
+    task or bulk selection - Replaced Done/Block buttons with status dropdown (Jira-style)
+    - Reorganized layout: action buttons (top) + select controls (bottom right) -
+    Added handleStatusChange() function for status dropdown routing - Applied refactoring
+    to both renderTasks() and renderTasksWithPhases() - Commit: 9c14cd9 "Refactor
+    action bar: unified run button, status dropdown, reorganized layout"'
   phase_id: ''
   status: DONE
   title: 'Implement: otpimize action on the left'
-  updated_at: '2026-03-08T17:50:00.000000'
+  updated_at: '2026-03-08T18:04:25.090272'

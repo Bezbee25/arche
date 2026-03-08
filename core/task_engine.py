@@ -239,7 +239,7 @@ def _resolve_task(tasks: list[dict], target: str) -> Optional[dict]:
 
 
 def update_task(track_id: str, task_id: str, updates: dict) -> Optional[dict]:
-    """Update mutable fields (title, description, notes) of a task."""
+    """Update mutable fields of a task."""
     tasks = load_tasks(track_id)
     target = None
     for t in tasks:
@@ -248,12 +248,31 @@ def update_task(track_id: str, task_id: str, updates: dict) -> Optional[dict]:
             break
     if not target:
         return None
-    for field in ("title", "description", "notes"):
-        if field in updates:
+    for field in ("title", "description", "notes", "status", "type"):
+        if field in updates and updates[field] is not None:
             target[field] = updates[field]
     target["updated_at"] = datetime.now().isoformat()
     save_tasks(track_id, tasks)
     return target
+
+
+def delete_task(track_id: str, task_id: str) -> bool:
+    """Remove a task by id. Returns True if found and deleted."""
+    tasks = load_tasks(track_id)
+    new_tasks = [t for t in tasks if t["id"] != task_id]
+    if len(new_tasks) == len(tasks):
+        return False
+    save_tasks(track_id, new_tasks)
+    return True
+
+
+def delete_tasks_for_phase(track_id: str, phase_id: str) -> int:
+    """Remove all tasks belonging to a phase. Returns count deleted."""
+    tasks = load_tasks(track_id)
+    new_tasks = [t for t in tasks if t.get("phase_id") != phase_id]
+    deleted = len(tasks) - len(new_tasks)
+    save_tasks(track_id, new_tasks)
+    return deleted
 
 
 def get_task_stats(track_id: str, phase_id: Optional[str] = None) -> dict:

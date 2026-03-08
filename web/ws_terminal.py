@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
 from pathlib import Path
@@ -12,7 +13,7 @@ from fastapi.websockets import WebSocket, WebSocketDisconnect, WebSocketState
 class TerminalManager:
     """Manages WebSocket ↔ pty sessions."""
 
-    async def handle(self, websocket: WebSocket) -> None:
+    async def handle(self, websocket: WebSocket, init_cmd: str | None = None) -> None:
         await websocket.accept()
 
         try:
@@ -63,17 +64,38 @@ class TerminalManager:
                     break
 
         async def write_pty():
-            """Receive from WebSocket and write to pty."""
+            """Receive from WebSocket and write to pty.
+
+            Text frames = JSON control messages (e.g. resize).
+            Binary frames = raw keyboard input.
+            """
             while True:
                 try:
-                    data = await websocket.receive_bytes()
-                    if not proc.isalive():
-                        break
-                    proc.write(data)
+                    msg = await websocket.receive()
+                    if msg.get("text"):
+                        try:
+                            ctrl = json.loads(msg["text"])
+                            if ctrl.get("type") == "resize":
+                                rows = max(1, int(ctrl.get("rows", 24)))
+                                cols = max(1, int(ctrl.get("cols", 80)))
+                                proc.setwinsize(rows, cols)
+                        except (json.JSONDecodeError, ValueError):
+                            pass
+                    elif msg.get("bytes"):
+                        if not proc.isalive():
+                            break
+                        proc.write(msg["bytes"])
                 except WebSocketDisconnect:
                     break
                 except Exception:
                     break
+
+        if init_cmd:
+            async def _inject_init_cmd():
+                await asyncio.sleep(0.6)
+                if proc.isalive():
+                    proc.write((init_cmd + "\r").encode())
+            asyncio.create_task(_inject_init_cmd())
 
         try:
             read_task = asyncio.create_task(read_pty())

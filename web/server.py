@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shlex
 import shutil
 import sys
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -25,6 +27,7 @@ from core.track_manager import (
     new_track,
     switch_track,
     load_project,
+    save_project,
     load_phases,
     save_phases,
     add_phase,
@@ -79,6 +82,8 @@ class UpdateTaskRequest(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
     notes: Optional[str] = None
+    status: Optional[str] = None
+    type: Optional[str] = None
 
 class NewPhaseRequest(BaseModel):
     name: str
@@ -191,6 +196,10 @@ def _build_phases_detail(track_id: str) -> list[dict]:
     return result
 
 
+# Token → init_cmd mapping for interactive terminal sessions
+_pending_terminal_inits: dict[str, str] = {}
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="arche", docs_url="/api/docs")
 
@@ -201,6 +210,19 @@ def create_app() -> FastAPI:
     @app.get("/api/project")
     def get_project():
         return load_project()
+
+    @app.get("/api/settings/theme")
+    def get_theme():
+        project = load_project()
+        return {"theme": project.get("ui_theme", "dark")}
+
+    @app.post("/api/settings/theme")
+    def save_theme(req: dict):
+        theme = req.get("theme", "dark")
+        project = load_project()
+        project["ui_theme"] = theme
+        save_project(project)
+        return {"theme": theme}
 
     @app.get("/api/tracks")
     def get_plans():
@@ -683,6 +705,14 @@ def create_app() -> FastAPI:
         task = add_task(track_id, req.title, req.description, phase_id=req.phase_id)
         return task
 
+    @app.delete("/api/tracks/{track_id}/tasks/{task_id}")
+    def remove_task(track_id: str, task_id: str):
+        from core.task_engine import delete_task
+        ok = delete_task(track_id, task_id)
+        if not ok:
+            raise HTTPException(status_code=404, detail="Task not found")
+        return {"deleted": task_id}
+
     @app.post("/api/tracks/{track_id}/tasks/generate-template")
     def generate_tasks_template(track_id: str, req: TemplateGenerationRequest):
         from agents.planner import generate_tasks_from_template
@@ -842,6 +872,75 @@ def create_app() -> FastAPI:
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
+
+    @app.get("/api/tracks/{track_id}/tasks/{task_id}/prepare-run")
+    async def prepare_task_run(
+        track_id: str, task_id: str, comment: str = "", auto_done: bool = True
+    ):
+        """Prepare a task for interactive PTY execution.
+
+        Switches to the task, saves the prompt to a temp file, and returns
+        a one-time token that the /ws/terminal WebSocket will use to inject
+        the command into a real PTY shell.
+        """
+        from core.context import build_task_prompt
+        from core.router import (
+            _build_interactive_command,
+            _get_cli_for_model,
+            get_model_for_phase,
+            get_tools_for_phase,
+        )
+
+        plan = get_track(track_id)
+        if not plan:
+            raise HTTPException(status_code=404, detail="Plan not found")
+
+        switch_task(track_id, task_id)
+        start_task(track_id)
+
+        # Task type overrides track phase for LLM selection (dev/debug/doc)
+        task_obj = next((t for t in load_tasks(track_id) if t.get("id") == task_id), {})
+        phase = task_obj.get("type") or plan.get("phase", "dev")
+        model = get_model_for_phase(phase, plan)
+        cli = _get_cli_for_model(model)
+
+        if not shutil.which(cli):
+            if cli != "claude" and shutil.which("claude"):
+                cli = "claude"
+                model = "claude-sonnet-4-6"
+            else:
+                raise HTTPException(status_code=500, detail=f"CLI '{cli}' not found")
+
+        tools = get_tools_for_phase(phase, plan)
+        cmd = _build_interactive_command(cli, model, None, tools)
+        prompt = build_task_prompt(track_id, plan, comment=comment)
+
+        # Use storage/tracks/{track_id}/tmp/ to stay within the project directory
+        from core.track_manager import TRACKS_DIR
+        tmp_dir = TRACKS_DIR / track_id / "tmp"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+
+        prompt_file = tmp_dir / f"prompt-{task_id[:8]}-{uuid.uuid4().hex[:8]}.txt"
+        prompt_file.write_text(prompt, encoding="utf-8")
+
+        script_file = tmp_dir / f"run-{uuid.uuid4().hex[:8]}.sh"
+        auto_done_line = "[ $_EXIT -eq 0 ] && arche task done 2>/dev/null && echo '\\n✓ Task marked as done.'" if auto_done else ""
+        script_file.write_text(
+            "#!/bin/bash\n"
+            f"{' '.join(shlex.quote(c) for c in cmd)} < {shlex.quote(str(prompt_file))}\n"
+            "_EXIT=$?\n"
+            f"rm -f {shlex.quote(str(prompt_file))}\n"
+            f"rm -f {shlex.quote(str(script_file))}\n"
+            f"{auto_done_line}\n",
+            encoding="utf-8",
+        )
+
+        init_cmd = f"bash {shlex.quote(str(script_file))}"
+
+        token = str(uuid.uuid4())
+        _pending_terminal_inits[token] = init_cmd
+
+        return {"token": token, "task_title": task_obj.get("title", "")}
 
     @app.post("/api/tracks/{track_id}/tasks/bulk-run")
     async def bulk_run_tasks(track_id: str, req: BulkTaskRunRequest):
@@ -1175,8 +1274,9 @@ def create_app() -> FastAPI:
     # ── WebSocket terminal ────────────────────────────────────────────────
 
     @app.websocket("/ws/terminal")
-    async def terminal_ws(websocket: WebSocket):
-        await terminal_manager.handle(websocket)
+    async def terminal_ws(websocket: WebSocket, token: str = None):
+        init_cmd = _pending_terminal_inits.pop(token, None) if token else None
+        await terminal_manager.handle(websocket, init_cmd=init_cmd)
 
     # ── Static files / SPA ───────────────────────────────────────────────
 
