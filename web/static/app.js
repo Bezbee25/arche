@@ -29,6 +29,8 @@ const state = {
   newPhasePlanId: null,
   addTaskTrackId: null,
   newTrackType: 'feature',
+  _userScrolling: null,     // id of tab where user is scrolling ('spec' | 'tasks' | 'output')
+  _autoRefreshBlocked: false, // true if user is scrolling in any section
 };
 
 let _termCounter = 0;
@@ -85,6 +87,41 @@ const api = {
 const $ = (sel) => document.querySelector(sel);
 const $id = (id) => document.getElementById(id);
 
+// ── Scroll detection helpers ────────────────────────────────────────────────
+function setupScrollDetection() {
+  // Detect user scrolling in spec, tasks, and output tabs
+  ['tab-spec', 'tasks-scroll', 'output-pre'].forEach(id => {
+    const el = $id(id);
+    if (!el) return;
+
+    let scrollTimeout = null;
+    el.addEventListener('scroll', () => {
+      state._autoRefreshBlocked = true;
+      state._userScrolling = id;
+
+      // Clear existing timeout
+      if (scrollTimeout) clearTimeout(scrollTimeout);
+
+      // Resume auto-refresh 5 seconds after user stops scrolling
+      scrollTimeout = setTimeout(() => {
+        state._autoRefreshBlocked = false;
+        state._userScrolling = null;
+        scrollTimeout = null;
+      }, 5000);
+    }, { passive: true });
+  });
+}
+
+// Helper to auto-scroll output only if user is not manually scrolling
+function _autoScrollOutput() {
+  const pre = $id('output-pre');
+  if (!pre) return;
+  // Only auto-scroll if user is not manually scrolling this element
+  if (state._userScrolling !== 'output-pre') {
+    pre.scrollTop = pre.scrollHeight;
+  }
+}
+
 // ── Init ───────────────────────────────────────────────────────────────────
 async function init() {
   setupResizableConsole();
@@ -94,10 +131,12 @@ async function init() {
   const project = await api.getProject();
   setupTheme(project ? (project.name || 'default') : 'default');
   await refresh();
+  setupScrollDetection();
   startPolling();
 }
 
 async function refresh() {
+  // Skip panel refresh if user is actively scrolling (but always update sidebar)
   const [project, plans] = await Promise.all([api.getProject(), api.getTracks()]);
   if (project) {
     $id('project-name').textContent = project.name || 'unknown project';
@@ -111,6 +150,9 @@ async function refresh() {
     if (activePlan && !state.selectedPlanId) {
       state.selectedPlanId = activePlan.id;
     }
+
+    // Skip panel re-render if user is scrolling
+    if (state._autoRefreshBlocked) return;
 
     if (state.selectedPlanId) {
       await renderPanelFor(state.selectedPlanId);
@@ -777,7 +819,7 @@ function _appendOutput(text) {
   if (pre) {
     pre.className = 'output-pre output-running';
     pre.textContent = state.outputText;
-    pre.scrollTop = pre.scrollHeight;
+    _autoScrollOutput();
   }
 }
 
@@ -879,15 +921,14 @@ function runTask(planId, taskId, comment = '', autoDone = true) {
   state._outputMeta = '';
   state._outputDone = false;
 
-  _switchToOutputTab();
-  _setOutputHeader('Connecting…', true);
-  const pre = $id('output-pre');
-  if (pre) { pre.textContent = ''; pre.className = 'output-pre output-running'; }
+  // Create/select a terminal for this task
+  const taskTerminal = createTaskTerminal(taskId);
+  taskTerminal.term.clear();
 
   const params = new URLSearchParams();
   if (comment) params.append('comment', comment);
   if (autoDone) params.append('auto_done', 'true');
-  
+
   const url = `/api/tracks/${planId}/tasks/${taskId}/run?${params.toString()}`;
   const es = new EventSource(url);
   state.outputEventSource = es;
@@ -899,30 +940,24 @@ function runTask(planId, taskId, comment = '', autoDone = true) {
       state.outputEventSource = null;
       state.outputRunning = false;
       state._outputDone = true;
-      _setOutputHeader(`✓ Done — ${state._outputMeta}`, false);
-      if (pre) { pre.className = 'output-pre'; pre.scrollTop = pre.scrollHeight; }
+      taskTerminal.term.write('\n✓ Done\n');
       refresh();
       return;
     }
     if (data.startsWith('__META__ ')) {
       state._outputMeta = data.slice(9);
-      _setOutputHeader(`▶ ${state._outputMeta}`, true);
       return;
     }
     const chunk = stripAnsi(data);
     state.outputText += chunk;
-    if (pre) {
-      pre.textContent = state.outputText;
-      pre.scrollTop = pre.scrollHeight;
-    }
+    taskTerminal.term.write(chunk);
   };
 
   es.onerror = () => {
     es.close();
     state.outputEventSource = null;
     state.outputRunning = false;
-    _setOutputHeader('⚠ Connection error — is the server running?', false);
-    if (pre) { pre.className = 'output-pre output-error'; }
+    taskTerminal.term.write('\n⚠ Connection error\n');
   };
 }
 
@@ -937,10 +972,18 @@ function runBulkTasks(trackId, taskIds, comment = '', autoDone = true) {
   state._outputMeta = '';
   state._outputDone = false;
 
-  _switchToOutputTab();
-  _setOutputHeader('Connecting…', true);
-  const pre = $id('output-pre');
-  if (pre) { pre.textContent = ''; pre.className = 'output-pre output-running'; }
+  // Create terminals for all tasks upfront
+  const taskTerminals = {};
+  for (const taskId of taskIds) {
+    const terminal = createTaskTerminal(taskId);
+    terminal.term.clear();
+    taskTerminals[taskId] = terminal;
+  }
+
+  // Select the first task's terminal
+  if (taskIds.length > 0) {
+    selectTerminal(`-task-${taskIds[0]}`);
+  }
 
   const payload = {
     task_ids: taskIds,
@@ -949,24 +992,23 @@ function runBulkTasks(trackId, taskIds, comment = '', autoDone = true) {
   };
 
   const url = `/api/tracks/${trackId}/tasks/bulk-run`;
-  const es = new EventSource(url); // Note: EventSource doesn't support POST easily
-  state.outputEventSource = es;
 
-  // Alternative: use fetch with streaming if EventSource doesn't work
   fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   }).then(response => {
     if (!response.ok) {
-      _setOutputHeader(`⚠ Error: ${response.statusText}`, false);
-      if (pre) { pre.className = 'output-pre output-error'; }
+      if (taskIds.length > 0) {
+        taskTerminals[taskIds[0]].term.write(`\n⚠ Error: ${response.statusText}\n`);
+      }
       return;
     }
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
+    let currentTaskIndex = -1;
 
     const processStream = async () => {
       try {
@@ -975,8 +1017,6 @@ function runBulkTasks(trackId, taskIds, comment = '', autoDone = true) {
           if (done) {
             state.outputRunning = false;
             state._outputDone = true;
-            _setOutputHeader(`✓ Bulk execution done`, false);
-            if (pre) { pre.className = 'output-pre'; pre.scrollTop = pre.scrollHeight; }
             refresh();
             return;
           }
@@ -989,43 +1029,77 @@ function runBulkTasks(trackId, taskIds, comment = '', autoDone = true) {
             if (!line.trim()) continue;
             if (line.startsWith('data: ')) {
               const data = line.slice(6);
-              if (data === '__DONE__' || data.startsWith('__BULK_DONE__')) {
+
+              // Handle bulk completion marker
+              if (data.startsWith('__BULK_DONE__')) {
                 state.outputRunning = false;
                 state._outputDone = true;
-                _setOutputHeader('✓ Bulk execution complete', false);
-                if (pre) { pre.className = 'output-pre'; pre.scrollTop = pre.scrollHeight; }
+                if (currentTaskIndex >= 0 && currentTaskIndex < taskIds.length) {
+                  const taskId = taskIds[currentTaskIndex];
+                  if (taskTerminals[taskId]) {
+                    taskTerminals[taskId].term.write('\n✓ Bulk execution complete\n');
+                  }
+                }
                 refresh();
                 return;
               }
+
+              // Handle task start marker (format: "num/total title")
               if (data.startsWith('__TASK_START__')) {
-                const taskInfo = data.slice(14);
-                _setOutputHeader(`▶ Bulk: ${taskInfo}`, true);
+                const taskInfo = data.slice(14).trim();
+                // Extract task number from "num/total ..." format
+                const match = taskInfo.match(/^(\d+)\/\d+\s+(.*)$/);
+                if (match) {
+                  currentTaskIndex = parseInt(match[1], 10) - 1; // Convert to 0-based index
+                  if (currentTaskIndex >= 0 && currentTaskIndex < taskIds.length) {
+                    const taskId = taskIds[currentTaskIndex];
+                    if (taskTerminals[taskId]) {
+                      selectTerminal(`-task-${taskId}`);
+                      taskTerminals[taskId].term.write(`\n━━ ${match[2]}\n`);
+                    }
+                  }
+                }
                 continue;
               }
+
+              // Handle task done marker
               if (data.startsWith('__TASK_DONE__')) {
-                state.outputText += '\n✓ Task complete.\n\n';
-                if (pre) { pre.textContent = state.outputText; }
+                if (currentTaskIndex >= 0 && currentTaskIndex < taskIds.length) {
+                  const taskId = taskIds[currentTaskIndex];
+                  if (taskTerminals[taskId]) {
+                    taskTerminals[taskId].term.write('\n✓ Task complete\n\n');
+                  }
+                }
                 continue;
               }
+
+              // Regular output
               const chunk = stripAnsi(data);
               state.outputText += chunk;
-              if (pre) {
-                pre.textContent = state.outputText;
-                pre.scrollTop = pre.scrollHeight;
+              if (currentTaskIndex >= 0 && currentTaskIndex < taskIds.length) {
+                const taskId = taskIds[currentTaskIndex];
+                if (taskTerminals[taskId]) {
+                  taskTerminals[taskId].term.write(chunk);
+                }
               }
             }
           }
         }
       } catch (err) {
-        _setOutputHeader(`⚠ Stream error: ${err.message}`, false);
-        if (pre) { pre.className = 'output-pre output-error'; }
+        if (currentTaskIndex >= 0 && currentTaskIndex < taskIds.length) {
+          const taskId = taskIds[currentTaskIndex];
+          if (taskTerminals[taskId]) {
+            taskTerminals[taskId].term.write(`\n⚠ Stream error: ${err.message}\n`);
+          }
+        }
       }
     };
 
     processStream();
   }).catch(err => {
-    _setOutputHeader(`⚠ Network error: ${err.message}`, false);
-    if (pre) { pre.className = 'output-pre output-error'; }
+    if (taskIds.length > 0 && taskTerminals[taskIds[0]]) {
+      taskTerminals[taskIds[0]].term.write(`\n⚠ Network error: ${err.message}\n`);
+    }
   });
 }
 
@@ -1048,7 +1122,7 @@ function renderOutputPane() {
     pre.className = 'output-pre';
   }
   pre.textContent = state.outputText || '';
-  pre.scrollTop = pre.scrollHeight;
+  _autoScrollOutput();
 }
 
 // ── Edit task modal ─────────────────────────────────────────────────────────
@@ -1224,6 +1298,43 @@ function addTerminal() {
   return entry;
 }
 
+function createTaskTerminal(taskId) {
+  if (state.consoleCollapsed) {
+    $id('console-wrapper').classList.remove('collapsed');
+    state.consoleCollapsed = false;
+    $id('btn-console-toggle').textContent = '−';
+  }
+
+  // Use taskId as the terminal identifier (format: -task-{taskId})
+  const id = `-task-${taskId}`;
+
+  // Check if terminal already exists for this task
+  if (state.terminals.find(t => t.id === id)) {
+    selectTerminal(id);
+    renderTerminalTabs();
+    return state.terminals.find(t => t.id === id);
+  }
+
+  // Create pane div inside the shared container
+  const pane = document.createElement('div');
+  pane.className = 'terminal-pane';
+  pane.id = `term-pane-${id}`;
+  $id('terminal-container').appendChild(pane);
+
+  const term = new Terminal(TERM_OPTS);
+  const fitAddon = new FitAddon.FitAddon();
+  term.loadAddon(fitAddon);
+  term.open(pane);
+
+  // Task terminals don't use WebSocket; they receive streamed output via term.write()
+  const entry = { id, term, fitAddon, ws: null, pane };
+  state.terminals.push(entry);
+
+  selectTerminal(id);
+  renderTerminalTabs();
+  return entry;
+}
+
 function removeTerminal(id) {
   if (state.terminals.length <= 1) return; // minimum 1
   const idx = state.terminals.findIndex(t => t.id === id);
@@ -1253,12 +1364,16 @@ function selectTerminal(id) {
 function renderTerminalTabs() {
   const tabs = $id('terminal-tabs');
   const canClose = state.terminals.length > 1;
-  tabs.innerHTML = state.terminals.map(t => `
+  tabs.innerHTML = state.terminals.map(t => {
+    // Display name: -task-{taskId} or Term N
+    const displayName = t.id.startsWith('-task-') ? t.id : `Term&nbsp;${t.id.slice(1)}`;
+    return `
     <button class="term-tab ${t.id === state.activeTerminalId ? 'active' : ''}"
             onclick="selectTerminal('${t.id}')">
-      Term&nbsp;${t.id.slice(1)}
+      ${displayName}
       ${canClose ? `<span class="term-tab-close" onclick="event.stopPropagation();removeTerminal('${t.id}')">×</span>` : ''}
-    </button>`).join('') +
+    </button>`;
+  }).join('') +
     `<button class="term-tab-add" onclick="addTerminal()" title="New terminal">+</button>`;
 }
 
