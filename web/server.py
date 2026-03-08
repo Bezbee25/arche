@@ -97,6 +97,11 @@ class InterviewRequest(BaseModel):
 class ReworkRequest(BaseModel):
     review_issues: str = ""
 
+class BulkTaskRunRequest(BaseModel):
+    task_ids: list[str]  # List of task IDs to execute in order
+    comment: str = ""
+    auto_done: bool = True
+
 class TemplateGenerationRequest(BaseModel):
     description: str
     subtypes: list[str] = []
@@ -717,7 +722,7 @@ def create_app() -> FastAPI:
         return task
 
     @app.get("/api/tracks/{track_id}/tasks/{task_id}/run")
-    async def stream_task_run(track_id: str, task_id: str, comment: str = ""):
+    async def stream_task_run(track_id: str, task_id: str, comment: str = "", auto_done: bool = True):
         """Switch to task then stream LLM output via SSE."""
         from core.context import build_task_prompt, extract_archi_notes, append_archi
         from core.router import (
@@ -799,6 +804,11 @@ def create_app() -> FastAPI:
                 notes = extract_archi_notes(output_str)
                 if notes:
                     append_archi(track_id, notes)
+                
+                # Auto-done functionality
+                if auto_done:
+                    from core.task_engine import complete_task
+                    complete_task(track_id, task_id, "Auto-completed after successful run")
             except Exception as e:
                 yield f"data: ⚠ Error: {e}\n\n"
             finally:
@@ -806,6 +816,124 @@ def create_app() -> FastAPI:
 
         return StreamingResponse(
             generate(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    @app.post("/api/tracks/{track_id}/tasks/bulk-run")
+    async def bulk_run_tasks(track_id: str, req: BulkTaskRunRequest):
+        """Execute multiple tasks in sequence via streaming (one per task)."""
+        from core.context import build_task_prompt, extract_archi_notes, append_archi
+        from core.router import (
+            _build_command,
+            _get_cli_for_model,
+            get_model_for_phase,
+            get_tools_for_phase,
+        )
+
+        plan = get_track(track_id)
+        if not plan:
+            raise HTTPException(status_code=404, detail="Track not found")
+
+        if not req.task_ids:
+            raise HTTPException(status_code=400, detail="No task IDs provided")
+
+        # Validate all tasks exist and filter DONE ones
+        all_tasks = load_tasks(track_id)
+        task_map = {t["id"]: t for t in all_tasks}
+        valid_task_ids = []
+        for tid in req.task_ids:
+            if tid not in task_map:
+                raise HTTPException(status_code=404, detail=f"Task {tid} not found")
+            task = task_map[tid]
+            if task["status"] != "DONE":
+                valid_task_ids.append(tid)
+
+        if not valid_task_ids:
+            raise HTTPException(status_code=400, detail="All tasks are already DONE")
+
+        phase = plan.get("phase", "dev")
+        model = get_model_for_phase(phase, plan)
+        cli = _get_cli_for_model(model)
+
+        if not shutil.which(cli):
+            if cli != "claude" and shutil.which("claude"):
+                cli = "claude"
+                model = "claude-sonnet-4-6"
+            else:
+                raise HTTPException(status_code=500, detail=f"CLI '{cli}' not found")
+
+        tools = get_tools_for_phase(phase, plan)
+        cmd_base = _build_command(cli, model, None, tools)
+        if cli == "claude":
+            cmd_base += ["--output-format", "stream-json", "--verbose"]
+
+        async def generate_bulk():
+            for task_num, task_id in enumerate(valid_task_ids, 1):
+                # Update current task
+                switch_task(track_id, task_id)
+                start_task(track_id, task_id)
+
+                task = task_map[task_id]
+                prompt = build_task_prompt(track_id, plan, comment=req.comment)
+
+                yield f"data: __TASK_START__ {task_num}/{len(valid_task_ids)} {task['title']}\n\n"
+
+                output_lines: list[str] = []
+                try:
+                    proc = await asyncio.create_subprocess_exec(
+                        *cmd_base,
+                        stdin=asyncio.subprocess.PIPE,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.STDOUT,
+                        limit=10 * 1024 * 1024,
+                    )
+                    proc.stdin.write(prompt.encode())
+                    await proc.stdin.drain()
+                    proc.stdin.close()
+
+                    while True:
+                        if cli == "claude":
+                            line = await proc.stdout.readline()
+                            if not line:
+                                break
+                            raw = line.decode("utf-8", errors="replace")
+                            text = _parse_claude_json_line(raw)
+                            if text:
+                                output_lines.append(text)
+                                sse_lines = text.split("\n")
+                                sse = "\n".join(f"data: {l}" for l in sse_lines)
+                                yield f"{sse}\n\n"
+                        else:
+                            chunk = await proc.stdout.read(4096)
+                            if not chunk:
+                                break
+                            text = chunk.decode("utf-8", errors="replace")
+                            output_lines.append(text)
+                            lines = text.split("\n")
+                            sse = "\n".join(f"data: {l}" for l in lines)
+                            yield f"{sse}\n\n"
+
+                    await proc.wait()
+
+                    output_str = "".join(output_lines)
+                    notes = extract_archi_notes(output_str)
+                    if notes:
+                        append_archi(track_id, notes)
+
+                    # Auto-done
+                    if req.auto_done:
+                        complete_task(track_id, task_id, f"Auto-completed (bulk execution, task {task_num}/{len(valid_task_ids)})")
+
+                    yield f"data: __TASK_DONE__\n\n"
+
+                except Exception as e:
+                    yield f"data: ⚠ Error in task {task_num}: {e}\n\n"
+
+            yield f"data: __BULK_DONE__ {len(valid_task_ids)} tasks completed\n\n"
+
+        return StreamingResponse(
+            generate_bulk(),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )

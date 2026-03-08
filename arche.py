@@ -188,9 +188,11 @@ def _show_help() -> None:
     ])
 
     section("Tasks  ← the main loop", "yellow", [
-        ("arche task run",                  "★ Run current task with full context → LLM"),
-        ("arche task run --auto-done",      "  Same + mark DONE automatically"),
+        ("arche task run",                  "★ Run current task with full context → LLM (auto-done enabled)"),
+        ("arche task run --no-auto-done",   "  Same + don't mark DONE automatically"),
         ("arche task next",                 "  Show next task (without running it)"),
+        ("arche task switch <target>",      "  Jump to a task by number, id or title"),
+        ("arche task switch --bulk 1,2,3",  "  Execute multiple tasks in sequence (comma-separated list)"),
         ("arche task done [--notes \"…\"]", "  Mark current task done, advance to next"),
         ("arche task block \"<reason>\"",   "  Mark current task as blocked"),
         ("arche task add \"<title>\"",      "  Add a task manually"),
@@ -266,6 +268,9 @@ def init() -> None:
         ],
         "codex": [
             ("codex",                    "Codex       — OpenAI code model"),
+        ],
+        "vibe": [
+            ("devstral-small",           "Devstral Small — Mistral AI code model"),
         ],
     }
 
@@ -767,21 +772,91 @@ def task_next() -> None:
 @task_app.command("switch")
 def task_switch(
     target: str = typer.Argument(..., help="Task number, id (or prefix), or title substring"),
+    bulk: bool = typer.Option(False, "--bulk", help="Execute multiple tasks in sequence (requires space-separated task IDs or numbers after --bulk)"),
 ) -> None:
-    """Switch the current task (by number, id, or title)."""
+    """Switch the current task (by number, id, or title), or execute multiple tasks with --bulk."""
     _require_project()
     plan = _require_active_track()
     track_id = plan["id"]
 
-    from core.task_engine import switch_task, load_tasks, STATUS_DONE
+    from core.task_engine import switch_task, load_tasks, STATUS_DONE, get_current_task, start_task, complete_task
+    from core.context import build_task_prompt, extract_archi_notes, append_archi
+    from core.router import call_llm
+    from core.session_logger import log as slog, log_task_done
     from core.status import TASK_STATUS_ICONS
 
-    # Show numbered list first if target looks ambiguous (no digit-only, no id-like)
     tasks = load_tasks(track_id)
     if not tasks:
         console.print("[yellow]No tasks in this track.[/yellow]")
         raise typer.Exit(1)
 
+    if bulk:
+        # Parse target as comma-separated task identifiers
+        # Usage: arche task switch --bulk 1,2,3 (comma-separated task numbers/IDs)
+
+        # Parse target as comma-separated list
+        target_list = [t.strip() for t in target.split(",") if t.strip()]
+        if not target_list:
+            console.print("[red]No tasks specified for bulk execution.[/red]")
+            raise typer.Exit(1)
+
+        console.print(f"\n[bold cyan]Bulk task execution[/bold cyan]")
+        console.print(f"[dim]Selected {len(target_list)} task(s) from track:[/dim] {plan.get('name', track_id)}\n")
+
+        resolved_tasks = []
+        for task_target in target_list:
+            from core.task_engine import _resolve_task
+            resolved = _resolve_task(tasks, task_target)
+            if resolved is None:
+                console.print(f"[red]Task not found:[/red] {task_target}")
+                raise typer.Exit(1)
+            if resolved["status"] == STATUS_DONE:
+                console.print(f"[yellow]⊘ Skipping:[/yellow] {resolved['title']} (already DONE)")
+            else:
+                resolved_tasks.append(resolved)
+
+        if not resolved_tasks:
+            console.print("[yellow]No pending tasks to execute.[/yellow]")
+            return
+
+        console.print(f"[dim]Executing {len(resolved_tasks)} task(s):[/dim]\n")
+        for i, task in enumerate(resolved_tasks, 1):
+            console.print(f"  [cyan]Task {i}/{len(resolved_tasks)}[/cyan] {task['title']}")
+        console.print()
+
+        # Execute each task in order
+        for i, task in enumerate(resolved_tasks, 1):
+            console.print(f"\n[bold cyan]▶ Task {i}/{len(resolved_tasks)}[/bold cyan] [dim]—[/dim] [bold]{task['title']}[/bold]")
+            console.print(f"[dim]Model:[/dim] {_model_label(plan)}\n")
+
+            switch_task(track_id, task["id"])
+            start_task(track_id, task["id"])
+
+            prompt = build_task_prompt(track_id, plan, comment="")
+            slog(track_id, f"Bulk task {i}: **{task['title']}**", "BULK_RUN")
+
+            phase = plan.get("phase", "dev")
+            output = call_llm(prompt, phase=phase, track_meta=plan, stream=True)
+
+            archi_notes = extract_archi_notes(output)
+            if archi_notes:
+                append_archi(track_id, archi_notes)
+
+            slog(track_id, f"Bulk task {i} done: **{task['title']}**\n\nOutput:\n{output[:400]}…", "BULK_RUN")
+
+            # Auto-mark as done
+            complete_task(track_id, task["id"], "Auto-completed (bulk execution)")
+            log_task_done(track_id, task["title"])
+            console.print(f"[green]✓ Done.[/green]")
+
+        # Show summary
+        console.print(f"\n[bold green]✓ Bulk execution complete:[/bold green] {len(resolved_tasks)} task(s) executed")
+        next_task = start_task(track_id)
+        if next_task:
+            console.print(f"[cyan]→ Next pending:[/cyan] {next_task['title']}")
+        return
+
+    # Single task switch (existing behavior)
     task = switch_task(track_id, target)
 
     if task is None:
@@ -804,7 +879,7 @@ def task_switch(
 
 @task_app.command("run")
 def task_run(
-    auto_done: bool = typer.Option(False, "--auto-done", help="Marque la tâche comme DONE automatiquement après"),
+    auto_done: bool = typer.Option(True, "--auto-done", "--no-auto-done", help="Mark task as DONE automatically after run (default: enabled)"),
     comment: Optional[str] = typer.Option(None, "--comment", "-m", help="Commentaire ou contexte additionnel (bug constaté, précision…)"),
 ) -> None:
     """Lance la tâche courante : construit le contexte complet et appelle le LLM."""
@@ -964,10 +1039,11 @@ def task_help() -> None:
     t = Table(show_header=False, box=None, padding=(0, 2), expand=False)
     t.add_column("cmd",  style="bold yellow", no_wrap=True, min_width=38)
     t.add_column("desc", style="dim white")
-    t.add_row("arche task run",                   "★ Run current task with full context → LLM")
-    t.add_row("arche task run --auto-done",        "  Same + mark DONE automatically")
+    t.add_row("arche task run",                   "★ Run current task with full context → LLM (auto-done enabled)")
+    t.add_row("arche task run --no-auto-done",     "  Same + don't mark DONE automatically")
     t.add_row("arche task next",                   "  Pick next pending task (without running)")
     t.add_row("arche task switch <n|id|title>",    "  Jump to a specific task by number, id or title")
+    t.add_row("arche task switch --bulk 1,2,3",    "  Execute multiple tasks in sequence (comma-separated)")
     t.add_row("arche task done [--notes \"…\"]",  "  Mark current task done, advance to next")
     t.add_row("arche task block \"<reason>\"",     "  Mark current task as blocked")
     t.add_row("arche task add \"<title>\"",        "  Add a task manually")

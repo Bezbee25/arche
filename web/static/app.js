@@ -21,6 +21,7 @@ const state = {
   doneTask: null,
   blockTask: null,
   uiSelectedTaskId: null,   // tâche cliquée dans l'UI (pour les actions)
+  bulkSelectedTaskIds: [],  // tâches sélectionnées (checkboxes) — preserves order
   taskFilter: 'all',        // 'all' | 'TODO' | 'SELECTED' | 'IN_PROGRESS' | 'DONE'
   runTask: null,            // { trackId, taskId } | null
   interview: null,          // { planId, description, qa, currentQuestion } | null
@@ -260,15 +261,19 @@ function renderTasks(plan) {
   const uiSel = state.uiSelectedTaskId;
   const uiTask = uiSel ? allTasks.find(t => t.id === uiSel) : null;
   const uiDone = uiTask && uiTask.status === 'DONE';
+  const hasBulkSelection = state.bulkSelectedTaskIds.length > 0;
 
   const taskRows = filtered.map(t => {
     const status = t.status || 'TODO';
     const icon = TASK_ICONS[status] || '·';
     const isUiSelected = t.id === uiSel;
-    const rowClass = `task-item${isUiSelected ? ' ui-selected' : ''}`;
+    const isBulkSelected = state.bulkSelectedTaskIds.includes(t.id);
+    const bulkIndex = state.bulkSelectedTaskIds.indexOf(t.id) + 1; // 1-based
+    const rowClass = `task-item${isUiSelected ? ' ui-selected' : ''}${isBulkSelected ? ' bulk-selected' : ''}`;
     const titleClass = status === 'DONE' ? 'done' : status === 'IN_PROGRESS' ? 'active' : '';
     const label = TASK_LABELS[status];
     const badge = label ? `<span class="task-badge task-badge-${status.toLowerCase()}">${label}</span>` : '';
+    const bulkNumber = isBulkSelected ? `<span class="bulk-number">${bulkIndex}</span>` : '';
 
     return `
       <div class="${rowClass}" data-task-id="${t.id}" data-plan-id="${planId}">
@@ -279,6 +284,10 @@ function renderTasks(plan) {
           ${t.blocked_reason ? `<div class="task-desc blocked-reason">↳ ${escHtml(t.blocked_reason)}</div>` : ''}
         </div>
         ${badge}
+        <div class="task-checkbox-wrapper">
+          ${bulkNumber}
+          <input type="checkbox" class="task-checkbox" data-task-id="${t.id}" ${isBulkSelected ? 'checked' : ''}>
+        </div>
       </div>`;
   }).join('');
 
@@ -298,14 +307,27 @@ function renderTasks(plan) {
   const noSel = !uiSel;
   const dis = (noSel || !isActive) ? ' disabled' : '';
   const disLlm = (!isActive) ? ' disabled' : dis;
+  const selectAllBtn = hasBulkSelection
+    ? `<button class="task-action-btn btn-deselect-all" onclick="clearBulkSelection()">✕ Deselect All</button>`
+    : `<button class="task-action-btn btn-select-all" onclick="selectAllTasks('${planId}')">☑ Select All</button>`;
+  const bulkRunBtn = hasBulkSelection
+    ? `<button class="task-action-btn btn-bulk-run" title="Execute selected tasks in sequence"${!isActive ? ' disabled' : ''} onclick="uiBulkRunTasks('${planId}')">⇒ Bulk Run</button>`
+    : '';
+
   const actionBar = `
     <div class="task-action-bar">
       <button class="task-action-btn btn-run" title="${isActive ? 'Run task' : 'Only available on active track'}"${disLlm} onclick="uiRunTask()">▶ Run</button>
+      <label class="auto-done-label" title="Mark task as done when run completes">
+        <input type="checkbox" id="action-auto-done" checked>
+        Auto-done
+      </label>
       <button class="task-action-btn btn-edit" title="Edit"${dis} onclick="uiEditTask()">✎ Edit</button>
       <button class="task-action-btn btn-done" title="Mark done"${noSel || uiDone || !isActive ? ' disabled' : ''} onclick="uiDoneTask()">✓ Done</button>
       <button class="task-action-btn btn-block" title="Block"${noSel || uiDone || !isActive ? ' disabled' : ''} onclick="uiBlockTask()">✗ Block</button>
       <button class="task-action-btn btn-review" title="${isActive ? 'Review' : 'Only available on active track'}"${disLlm} onclick="uiReviewTask()">⊙ Review</button>
       <button class="task-action-btn btn-add" title="Add task" onclick="openAddTaskModal('${planId}')">+ Add</button>
+      ${selectAllBtn}
+      ${bulkRunBtn}
     </div>`;
 
   pane.innerHTML = `
@@ -327,14 +349,47 @@ function renderTasks(plan) {
     });
   });
 
-  // Clickable rows
+  // Clickable rows (toggle UI selection when clicking on row body, not checkbox)
   pane.querySelectorAll('.task-item').forEach(row => {
-    row.addEventListener('click', () => {
+    row.addEventListener('click', (e) => {
+      // If clicked directly on checkbox, let the checkbox handler deal with it
+      if (e.target.classList.contains('task-checkbox')) return;
+
       const tid = row.dataset.taskId;
       state.uiSelectedTaskId = state.uiSelectedTaskId === tid ? null : tid;
       renderTasks(plan);
     });
   });
+
+  // Checkbox handlers for bulk selection
+  pane.querySelectorAll('.task-checkbox').forEach(checkbox => {
+    checkbox.addEventListener('change', (e) => {
+      const taskId = e.target.dataset.taskId;
+      if (e.target.checked) {
+        if (!state.bulkSelectedTaskIds.includes(taskId)) {
+          state.bulkSelectedTaskIds.push(taskId);
+        }
+      } else {
+        state.bulkSelectedTaskIds = state.bulkSelectedTaskIds.filter(id => id !== taskId);
+      }
+      renderTasks(plan);
+    });
+  });
+}
+
+// ── Bulk selection helpers ──────────────────────────────────────────────────
+function selectAllTasks(planId) {
+  const plan = state._lastPlan;
+  if (!plan) return;
+  const allTasks = plan.tasks || [];
+  state.bulkSelectedTaskIds = allTasks.map(t => t.id);
+  renderTasks(plan);
+}
+
+function clearBulkSelection() {
+  state.bulkSelectedTaskIds = [];
+  const plan = state._lastPlan;
+  if (plan) renderTasks(plan);
 }
 
 // ── Phase-grouped tasks rendering ────────────────────────────────────────────
@@ -350,14 +405,27 @@ function renderTasksWithPhases(plan, phases) {
   const uiDone = uiTask && uiTask.status === 'DONE';
   const dis = (noSel || !isActive) ? ' disabled' : '';
   const disLlm = (!isActive) ? ' disabled' : dis;
+  const hasBulkSelection = state.bulkSelectedTaskIds.length > 0;
+  const selectAllBtn = hasBulkSelection
+    ? `<button class="task-action-btn btn-deselect-all" onclick="clearBulkSelection()">✕ Deselect All</button>`
+    : `<button class="task-action-btn btn-select-all" onclick="selectAllTasks('${planId}')">☑ Select All</button>`;
+  const bulkRunBtn = hasBulkSelection
+    ? `<button class="task-action-btn btn-bulk-run" title="Execute selected tasks in sequence"${!isActive ? ' disabled' : ''} onclick="uiBulkRunTasks('${planId}')">⇒ Bulk Run</button>`
+    : '';
 
   const actionBar = `
     <div class="task-action-bar">
       <button class="task-action-btn btn-run" title="${isActive ? 'Run task' : 'Only available on active track'}"${disLlm} onclick="uiRunTask()">▶ Run</button>
+      <label class="auto-done-label" title="Mark task as done when run completes">
+        <input type="checkbox" id="action-auto-done" checked>
+        Auto-done
+      </label>
       <button class="task-action-btn btn-edit" title="Edit"${dis} onclick="uiEditTask()">✎ Edit</button>
       <button class="task-action-btn btn-done" title="Mark done"${noSel || uiDone || !isActive ? ' disabled' : ''} onclick="uiDoneTask()">✓ Done</button>
       <button class="task-action-btn btn-block" title="Block"${noSel || uiDone || !isActive ? ' disabled' : ''} onclick="uiBlockTask()">✗ Block</button>
       <button class="task-action-btn btn-review" title="${isActive ? 'Review' : 'Only available on active track'}"${disLlm} onclick="uiReviewTask()">⊙ Review</button>
+      ${selectAllBtn}
+      ${bulkRunBtn}
     </div>`;
 
   const phaseSections = phases.map(ph => {
@@ -379,17 +447,24 @@ function renderTasksWithPhases(plan, phases) {
       const status = t.status || 'TODO';
       const icon = TASK_ICONS[status] || '·';
       const isUiSelected = t.id === uiSel;
+      const isBulkSelected = state.bulkSelectedTaskIds.includes(t.id);
+      const bulkIndex = state.bulkSelectedTaskIds.indexOf(t.id) + 1; // 1-based
       const titleClass = status === 'DONE' ? 'done' : status === 'IN_PROGRESS' ? 'active' : '';
       const label = TASK_LABELS[status];
       const badge = label ? `<span class="task-badge task-badge-${status.toLowerCase()}">${label}</span>` : '';
+      const bulkNumber = isBulkSelected ? `<span class="bulk-number">${bulkIndex}</span>` : '';
       return `
-        <div class="task-item${isUiSelected ? ' ui-selected' : ''}${isLocked ? ' task-locked' : ''}" data-task-id="${t.id}" data-plan-id="${planId}">
+        <div class="task-item${isUiSelected ? ' ui-selected' : ''}${isBulkSelected ? ' bulk-selected' : ''}${isLocked ? ' task-locked' : ''}" data-task-id="${t.id}" data-plan-id="${planId}">
           <div class="task-icon ${status.toLowerCase()}">${icon}</div>
           <div class="task-body">
             <div class="task-title ${titleClass}">${escHtml(t.title || '')}</div>
             ${t.description ? `<div class="task-desc">${escHtml(t.description)}</div>` : ''}
           </div>
           ${badge}
+          <div class="task-checkbox-wrapper">
+            ${bulkNumber}
+            <input type="checkbox" class="task-checkbox" data-task-id="${t.id}" ${isBulkSelected ? 'checked' : ''} ${isLocked ? 'disabled' : ''}>
+          </div>
         </div>`;
     }).join('');
 
@@ -430,11 +505,29 @@ function renderTasksWithPhases(plan, phases) {
 
   pane.innerHTML = toolbar + `<div class="tasks-scroll"><div class="phase-list">${phaseSections}</div></div>`;
 
-  // Bind task clicks
+  // Bind task clicks (toggle UI selection when clicking on row body, not checkbox)
   pane.querySelectorAll('.task-item:not(.task-locked)').forEach(row => {
-    row.addEventListener('click', () => {
+    row.addEventListener('click', (e) => {
+      // If clicked directly on checkbox, let the checkbox handler deal with it
+      if (e.target.classList.contains('task-checkbox')) return;
+
       const tid = row.dataset.taskId;
       state.uiSelectedTaskId = state.uiSelectedTaskId === tid ? null : tid;
+      renderTasksWithPhases(plan, phases);
+    });
+  });
+
+  // Checkbox handlers for bulk selection
+  pane.querySelectorAll('.task-checkbox').forEach(checkbox => {
+    checkbox.addEventListener('change', (e) => {
+      const taskId = e.target.dataset.taskId;
+      if (e.target.checked) {
+        if (!state.bulkSelectedTaskIds.includes(taskId)) {
+          state.bulkSelectedTaskIds.push(taskId);
+        }
+      } else {
+        state.bulkSelectedTaskIds = state.bulkSelectedTaskIds.filter(id => id !== taskId);
+      }
       renderTasksWithPhases(plan, phases);
     });
   });
@@ -587,7 +680,10 @@ function _getUiTask() {
 
 function uiRunTask() {
   const t = _getUiTask();
-  if (t) openRunModal(state.selectedPlanId, t.id, t.title);
+  if (t) {
+    const autoDone = $id('action-auto-done')?.checked ?? true;
+    openRunModal(state.selectedPlanId, t.id, t.title, autoDone);
+  }
 }
 
 async function uiSelectTask() {
@@ -614,6 +710,12 @@ function uiBlockTask() {
   openBlockModal(state.selectedPlanId, t.id, t.title);
 }
 
+function uiBulkRunTasks(planId) {
+  if (!state.bulkSelectedTaskIds || state.bulkSelectedTaskIds.length === 0) return;
+  const autoDone = $id('action-auto-done') ? $id('action-auto-done').checked : true;
+  runBulkTasks(planId, state.bulkSelectedTaskIds, '', autoDone);
+}
+
 // ── Legacy actions ───────────────────────────────────────────────────────────
 async function markTaskDone(planId, taskId) {
   await api.doneTask(planId, taskId);
@@ -635,10 +737,11 @@ async function switchCurrentTask(planId, taskId) {
 }
 
 // ── Run task modal ──────────────────────────────────────────────────────────
-function openRunModal(trackId, taskId, taskTitle) {
+function openRunModal(trackId, taskId, taskTitle, autoDone = true) {
   state.runTask = { trackId, taskId };
   $id('run-task-title').textContent = taskTitle;
   $id('run-task-comment').value = '';
+  $id('run-task-auto-done').checked = autoDone;
   $id('modal-run-overlay').classList.remove('hidden');
   setTimeout(() => $id('run-task-comment').focus(), 50);
 }
@@ -652,8 +755,9 @@ function confirmRunTask() {
   if (!state.runTask) return;
   const { trackId, taskId } = state.runTask;
   const comment = $id('run-task-comment').value.trim();
+  const autoDone = $id('run-task-auto-done').checked;
   closeRunModal();
-  runTask(trackId, taskId, comment);
+  runTask(trackId, taskId, comment, autoDone);
 }
 
 // ── Streaming helpers ───────────────────────────────────────────────────────
@@ -764,7 +868,7 @@ function _setOutputHeader(text, running = false) {
     : `<span>${escHtml(text)}</span>`;
 }
 
-function runTask(planId, taskId, comment = '') {
+function runTask(planId, taskId, comment = '', autoDone = true) {
   if (state.outputEventSource) {
     state.outputEventSource.close();
     state.outputEventSource = null;
@@ -780,9 +884,11 @@ function runTask(planId, taskId, comment = '') {
   const pre = $id('output-pre');
   if (pre) { pre.textContent = ''; pre.className = 'output-pre output-running'; }
 
-  const url = comment
-    ? `/api/tracks/${planId}/tasks/${taskId}/run?comment=${encodeURIComponent(comment)}`
-    : `/api/tracks/${planId}/tasks/${taskId}/run`;
+  const params = new URLSearchParams();
+  if (comment) params.append('comment', comment);
+  if (autoDone) params.append('auto_done', 'true');
+  
+  const url = `/api/tracks/${planId}/tasks/${taskId}/run?${params.toString()}`;
   const es = new EventSource(url);
   state.outputEventSource = es;
 
@@ -818,6 +924,109 @@ function runTask(planId, taskId, comment = '') {
     _setOutputHeader('⚠ Connection error — is the server running?', false);
     if (pre) { pre.className = 'output-pre output-error'; }
   };
+}
+
+function runBulkTasks(trackId, taskIds, comment = '', autoDone = true) {
+  if (state.outputEventSource) {
+    state.outputEventSource.close();
+    state.outputEventSource = null;
+  }
+
+  state.outputText = '';
+  state.outputRunning = true;
+  state._outputMeta = '';
+  state._outputDone = false;
+
+  _switchToOutputTab();
+  _setOutputHeader('Connecting…', true);
+  const pre = $id('output-pre');
+  if (pre) { pre.textContent = ''; pre.className = 'output-pre output-running'; }
+
+  const payload = {
+    task_ids: taskIds,
+    comment: comment,
+    auto_done: autoDone,
+  };
+
+  const url = `/api/tracks/${trackId}/tasks/bulk-run`;
+  const es = new EventSource(url); // Note: EventSource doesn't support POST easily
+  state.outputEventSource = es;
+
+  // Alternative: use fetch with streaming if EventSource doesn't work
+  fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  }).then(response => {
+    if (!response.ok) {
+      _setOutputHeader(`⚠ Error: ${response.statusText}`, false);
+      if (pre) { pre.className = 'output-pre output-error'; }
+      return;
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    const processStream = async () => {
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) {
+            state.outputRunning = false;
+            state._outputDone = true;
+            _setOutputHeader(`✓ Bulk execution done`, false);
+            if (pre) { pre.className = 'output-pre'; pre.scrollTop = pre.scrollHeight; }
+            refresh();
+            return;
+          }
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n\n');
+          buffer = lines.pop() || '';
+
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            if (line.startsWith('data: ')) {
+              const data = line.slice(6);
+              if (data === '__DONE__' || data.startsWith('__BULK_DONE__')) {
+                state.outputRunning = false;
+                state._outputDone = true;
+                _setOutputHeader('✓ Bulk execution complete', false);
+                if (pre) { pre.className = 'output-pre'; pre.scrollTop = pre.scrollHeight; }
+                refresh();
+                return;
+              }
+              if (data.startsWith('__TASK_START__')) {
+                const taskInfo = data.slice(14);
+                _setOutputHeader(`▶ Bulk: ${taskInfo}`, true);
+                continue;
+              }
+              if (data.startsWith('__TASK_DONE__')) {
+                state.outputText += '\n✓ Task complete.\n\n';
+                if (pre) { pre.textContent = state.outputText; }
+                continue;
+              }
+              const chunk = stripAnsi(data);
+              state.outputText += chunk;
+              if (pre) {
+                pre.textContent = state.outputText;
+                pre.scrollTop = pre.scrollHeight;
+              }
+            }
+          }
+        }
+      } catch (err) {
+        _setOutputHeader(`⚠ Stream error: ${err.message}`, false);
+        if (pre) { pre.className = 'output-pre output-error'; }
+      }
+    };
+
+    processStream();
+  }).catch(err => {
+    _setOutputHeader(`⚠ Network error: ${err.message}`, false);
+    if (pre) { pre.className = 'output-pre output-error'; }
+  });
 }
 
 function renderOutputPane() {
@@ -1738,6 +1947,7 @@ window.markTaskBlocked = markTaskBlocked;
 window.switchToPlan = switchToPlan;
 window.toggleSession = toggleSession;
 window.runTask = runTask;
+window.runBulkTasks = runBulkTasks;
 window.switchCurrentTask = switchCurrentTask;
 window.openEditTask = openEditTask;
 window.openDoneModal = openDoneModal;
@@ -1749,9 +1959,12 @@ window.uiSelectTask = uiSelectTask;
 window.uiEditTask = uiEditTask;
 window.uiDoneTask = uiDoneTask;
 window.uiBlockTask = uiBlockTask;
+window.uiBulkRunTasks = uiBulkRunTasks;
 window.openBlockModal = openBlockModal;
 window.closeBlockModal = closeBlockModal;
 window.confirmBlockTask = confirmBlockTask;
+window.selectAllTasks = selectAllTasks;
+window.clearBulkSelection = clearBulkSelection;
 window.generateTasks = generateTasks;
 window.refineSpec = refineSpec;
 window.refineAndGenerate = refineAndGenerate;
