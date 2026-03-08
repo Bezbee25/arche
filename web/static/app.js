@@ -89,8 +89,8 @@ const $id = (id) => document.getElementById(id);
 
 // ── Scroll detection helpers ────────────────────────────────────────────────
 function setupScrollDetection() {
-  // Detect user scrolling in spec, tasks, and output tabs
-  ['tab-spec', 'tasks-scroll', 'output-pre'].forEach(id => {
+  // Detect user scrolling in spec and tasks tabs (output is now in terminals section)
+  ['tab-spec', 'tasks-scroll'].forEach(id => {
     const el = $id(id);
     if (!el) return;
 
@@ -112,15 +112,6 @@ function setupScrollDetection() {
   });
 }
 
-// Helper to auto-scroll output only if user is not manually scrolling
-function _autoScrollOutput() {
-  const pre = $id('output-pre');
-  if (!pre) return;
-  // Only auto-scroll if user is not manually scrolling this element
-  if (state._userScrolling !== 'output-pre') {
-    pre.scrollTop = pre.scrollHeight;
-  }
-}
 
 // ── Init ───────────────────────────────────────────────────────────────────
 async function init() {
@@ -814,13 +805,9 @@ function _switchToOutputTab() {
 }
 
 function _appendOutput(text) {
+  // Output is now displayed in dedicated task terminals.
+  // This function is kept for backward compatibility but does nothing.
   state.outputText += text;
-  const pre = $id('output-pre');
-  if (pre) {
-    pre.className = 'output-pre output-running';
-    pre.textContent = state.outputText;
-    _autoScrollOutput();
-  }
 }
 
 /** Start an SSE stream (GET). Callbacks: onMeta, onText, onDone, onError, onSignal */
@@ -902,13 +889,6 @@ async function _startPostStream(url, body, { onMeta, onText, onDone, onError, on
 }
 
 // ── Run task / Output tab ───────────────────────────────────────────────────
-function _setOutputHeader(text, running = false) {
-  const header = $id('output-header');
-  if (!header) return;
-  header.innerHTML = running
-    ? `<span class="output-spinner"></span><span>${escHtml(text)}</span>`
-    : `<span>${escHtml(text)}</span>`;
-}
 
 function runTask(planId, taskId, comment = '', autoDone = true) {
   if (state.outputEventSource) {
@@ -1104,25 +1084,8 @@ function runBulkTasks(trackId, taskIds, comment = '', autoDone = true) {
 }
 
 function renderOutputPane() {
-  const header = $id('output-header');
-  const pre = $id('output-pre');
-  if (!header || !pre) return;
-
-  if (!state.outputRunning && !state._outputDone) {
-    header.innerHTML = '';
-    pre.textContent = 'Select a task and click ▶ Run.';
-    pre.className = 'output-pre output-empty';
-    return;
-  }
-  if (state.outputRunning) {
-    _setOutputHeader(state._outputMeta ? `▶ ${state._outputMeta}` : 'Running…', true);
-    pre.className = 'output-pre output-running';
-  } else {
-    _setOutputHeader(state._outputMeta ? `✓ Done — ${state._outputMeta}` : '✓ Done', false);
-    pre.className = 'output-pre';
-  }
-  pre.textContent = state.outputText || '';
-  _autoScrollOutput();
+  // Output is now displayed in dedicated task terminals in the terminals section.
+  // This function is kept for backward compatibility but does nothing.
 }
 
 // ── Edit task modal ─────────────────────────────────────────────────────────

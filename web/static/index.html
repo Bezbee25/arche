@@ -44,8 +44,8 @@
         <button id="btn-new-plan" class="btn-sm">+ New track</button>
         <button id="btn-archi" class="btn-ghost btn-sm" title="Architecture blueprint"><span class="btn-icon">⊞</span> Archi</button>
         <button id="btn-memory" class="btn-ghost btn-sm" title="Shared memory"><span class="btn-icon">⊕</span> Memory</button>
-        <button id="btn-web-refresh" class="btn-sm btn-ghost" title="Refresh">↺</button>
-        <button id="btn-docs" class="btn-sm btn-ghost" title="Documentation">?</button>
+        <button id="btn-web-refresh" class="btn-sm btn-ghost" title="Refresh">↻</button>
+        <button id="btn-docs" class="btn-sm btn-ghost" title="Documentation">❓</button>
         <button id="btn-theme" class="btn-ghost btn-sm" title="Change theme">◑ Theme</button>
       </span>
     </header>
@@ -70,8 +70,7 @@
           <div id="tab-tasks" class="tab-pane active"></div>
           <div id="tab-spec" class="tab-pane"></div>
           <div id="tab-output" class="tab-pane">
-            <div id="output-header" class="output-header"></div>
-            <pre id="output-pre" class="output-pre"></pre>
+            <!-- Task output is now displayed in dedicated terminals in the terminals section -->
             <!-- Interview: start panel -->
             <div id="interview-start" class="interview-panel hidden">
               <div class="interview-label">Describe what you want to build:</div>
@@ -159,6 +158,10 @@
       <div id="run-task-title" class="modal-subtitle"></div>
       <label class="modal-section-label" for="run-task-comment">Comment <span class="modal-hint">(optional — bug found, extra context…)</span></label>
       <textarea id="run-task-comment" rows="4" placeholder="e.g. The login redirect fails with a 403, focus on the JWT validation…"></textarea>
+      <label class="modal-section-label" style="margin-top:12px;">
+        <input type="checkbox" id="run-task-auto-done" checked>
+        Auto-done <span class="modal-hint">(mark as done when run completes)</span>
+      </label>
       <div class="modal-actions">
         <button id="run-cancel" class="btn-ghost">Cancel</button>
         <button id="run-confirm" class="btn-primary">▶ Run</button>
