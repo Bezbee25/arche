@@ -316,9 +316,22 @@ body {
 
 .task-action-bar {
   display: flex;
-  gap: 6px;
+  flex-direction: column;
+  gap: 8px;
   margin-left: auto;
   flex-shrink: 0;
+}
+
+.action-buttons {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.selection-controls {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
 }
 
 .task-action-btn {
@@ -362,6 +375,36 @@ body {
 .auto-done-label input[type="checkbox"] {
   cursor: pointer;
   accent-color: var(--cyan);
+}
+
+.task-status-dropdown {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  padding: 5px 10px;
+  border-radius: 4px;
+  transition: background 0.1s, color 0.1s, border-color 0.1s;
+}
+
+.task-status-dropdown:not(:disabled):hover,
+.task-status-dropdown:not(:disabled):focus {
+  color: var(--text);
+  background: var(--bg3);
+  border-color: var(--cyan);
+  outline: none;
+}
+
+.task-status-dropdown:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.task-status-dropdown option {
+  background: var(--bg2);
+  color: var(--text);
 }
 
 /* ── Tasks ──────────────────────────────────────────── */

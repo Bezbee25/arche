@@ -340,27 +340,49 @@ function renderTasks(plan) {
   const noSel = !uiSel;
   const dis = (noSel || !isActive) ? ' disabled' : '';
   const disLlm = (!isActive) ? ' disabled' : dis;
+
+  // Status dropdown options
+  const statusOptions = [
+    { value: 'TODO', label: 'Todo', icon: '·' },
+    { value: 'IN_PROGRESS', label: 'In Progress', icon: '▶' },
+    { value: 'DONE', label: 'Done', icon: '✓' },
+    { value: 'BLOCKED', label: 'Blocked', icon: '✗' },
+  ];
+  const currentStatus = (uiTask && uiTask.status) || 'TODO';
+  const statusDropdown = `
+    <select class="task-status-dropdown" id="task-status-select" ${noSel || !isActive ? 'disabled' : ''} onchange="handleStatusChange(this.value)">
+      ${statusOptions.map(opt =>
+        `<option value="${opt.value}" ${currentStatus === opt.value ? 'selected' : ''}>${opt.icon} ${opt.label}</option>`
+      ).join('')}
+    </select>`;
+
+  // Select all / deselect all button
   const selectAllBtn = hasBulkSelection
     ? `<button class="task-action-btn btn-deselect-all" onclick="clearBulkSelection()">✕ Deselect All</button>`
     : `<button class="task-action-btn btn-select-all" onclick="selectAllTasks('${planId}')">☑ Select All</button>`;
-  const bulkRunBtn = hasBulkSelection
-    ? `<button class="task-action-btn btn-bulk-run" title="Execute selected tasks in sequence"${!isActive ? ' disabled' : ''} onclick="uiBulkRunTasks('${planId}')">⇒ Bulk Run</button>`
-    : '';
+
+  // Run button label shows "Run" for single, "Run N" for bulk
+  const runLabel = hasBulkSelection ? `⇒ Run ${hasBulkSelection}` : '▶ Run';
+  const runTitle = hasBulkSelection
+    ? `Execute ${hasBulkSelection} selected task${hasBulkSelection > 1 ? 's' : ''} in sequence`
+    : isActive ? 'Run selected task' : 'Only available on active track';
 
   const actionBar = `
     <div class="task-action-bar">
-      <button class="task-action-btn btn-run" title="${isActive ? 'Run task' : 'Only available on active track'}"${disLlm} onclick="uiRunTask()">▶ Run</button>
-      <label class="auto-done-label" title="Mark task as done when run completes">
-        <input type="checkbox" id="action-auto-done" checked>
-        Auto-done
-      </label>
-      <button class="task-action-btn btn-edit" title="Edit"${dis} onclick="uiEditTask()">✎ Edit</button>
-      <button class="task-action-btn btn-done" title="Mark done"${noSel || uiDone || !isActive ? ' disabled' : ''} onclick="uiDoneTask()">✓ Done</button>
-      <button class="task-action-btn btn-block" title="Block"${noSel || uiDone || !isActive ? ' disabled' : ''} onclick="uiBlockTask()">✗ Block</button>
-      <button class="task-action-btn btn-review" title="${isActive ? 'Review' : 'Only available on active track'}"${disLlm} onclick="uiReviewTask()">⊙ Review</button>
-      <button class="task-action-btn btn-add" title="Add task" onclick="openAddTaskModal('${planId}')">+ Add</button>
-      ${selectAllBtn}
-      ${bulkRunBtn}
+      <div class="action-buttons">
+        <button class="task-action-btn btn-run" title="${runTitle}"${disLlm} onclick="uiRunTask()">${runLabel}</button>
+        <label class="auto-done-label" title="Mark task as done when run completes">
+          <input type="checkbox" id="action-auto-done" checked>
+          Auto-done
+        </label>
+        <button class="task-action-btn btn-edit" title="Edit"${dis} onclick="uiEditTask()">✎ Edit</button>
+        ${statusDropdown}
+        <button class="task-action-btn btn-review" title="${isActive ? 'Review' : 'Only available on active track'}"${disLlm} onclick="uiReviewTask()">⊙ Review</button>
+        <button class="task-action-btn btn-add" title="Add task" onclick="openAddTaskModal('${planId}')">+ Add</button>
+      </div>
+      <div class="selection-controls">
+        ${selectAllBtn}
+      </div>
     </div>`;
 
   pane.innerHTML = `
@@ -439,26 +461,48 @@ function renderTasksWithPhases(plan, phases) {
   const dis = (noSel || !isActive) ? ' disabled' : '';
   const disLlm = (!isActive) ? ' disabled' : dis;
   const hasBulkSelection = state.bulkSelectedTaskIds.length > 0;
+
+  // Status dropdown options
+  const statusOptions = [
+    { value: 'TODO', label: 'Todo', icon: '·' },
+    { value: 'IN_PROGRESS', label: 'In Progress', icon: '▶' },
+    { value: 'DONE', label: 'Done', icon: '✓' },
+    { value: 'BLOCKED', label: 'Blocked', icon: '✗' },
+  ];
+  const currentStatus = (uiTask && uiTask.status) || 'TODO';
+  const statusDropdown = `
+    <select class="task-status-dropdown" id="task-status-select" ${noSel || !isActive ? 'disabled' : ''} onchange="handleStatusChange(this.value)">
+      ${statusOptions.map(opt =>
+        `<option value="${opt.value}" ${currentStatus === opt.value ? 'selected' : ''}>${opt.icon} ${opt.label}</option>`
+      ).join('')}
+    </select>`;
+
+  // Select all / deselect all button
   const selectAllBtn = hasBulkSelection
     ? `<button class="task-action-btn btn-deselect-all" onclick="clearBulkSelection()">✕ Deselect All</button>`
     : `<button class="task-action-btn btn-select-all" onclick="selectAllTasks('${planId}')">☑ Select All</button>`;
-  const bulkRunBtn = hasBulkSelection
-    ? `<button class="task-action-btn btn-bulk-run" title="Execute selected tasks in sequence"${!isActive ? ' disabled' : ''} onclick="uiBulkRunTasks('${planId}')">⇒ Bulk Run</button>`
-    : '';
+
+  // Run button label shows "Run" for single, "Run N" for bulk
+  const runLabel = hasBulkSelection ? `⇒ Run ${hasBulkSelection}` : '▶ Run';
+  const runTitle = hasBulkSelection
+    ? `Execute ${hasBulkSelection} selected task${hasBulkSelection > 1 ? 's' : ''} in sequence`
+    : isActive ? 'Run selected task' : 'Only available on active track';
 
   const actionBar = `
     <div class="task-action-bar">
-      <button class="task-action-btn btn-run" title="${isActive ? 'Run task' : 'Only available on active track'}"${disLlm} onclick="uiRunTask()">▶ Run</button>
-      <label class="auto-done-label" title="Mark task as done when run completes">
-        <input type="checkbox" id="action-auto-done" checked>
-        Auto-done
-      </label>
-      <button class="task-action-btn btn-edit" title="Edit"${dis} onclick="uiEditTask()">✎ Edit</button>
-      <button class="task-action-btn btn-done" title="Mark done"${noSel || uiDone || !isActive ? ' disabled' : ''} onclick="uiDoneTask()">✓ Done</button>
-      <button class="task-action-btn btn-block" title="Block"${noSel || uiDone || !isActive ? ' disabled' : ''} onclick="uiBlockTask()">✗ Block</button>
-      <button class="task-action-btn btn-review" title="${isActive ? 'Review' : 'Only available on active track'}"${disLlm} onclick="uiReviewTask()">⊙ Review</button>
-      ${selectAllBtn}
-      ${bulkRunBtn}
+      <div class="action-buttons">
+        <button class="task-action-btn btn-run" title="${runTitle}"${disLlm} onclick="uiRunTask()">${runLabel}</button>
+        <label class="auto-done-label" title="Mark task as done when run completes">
+          <input type="checkbox" id="action-auto-done" checked>
+          Auto-done
+        </label>
+        <button class="task-action-btn btn-edit" title="Edit"${dis} onclick="uiEditTask()">✎ Edit</button>
+        ${statusDropdown}
+        <button class="task-action-btn btn-review" title="${isActive ? 'Review' : 'Only available on active track'}"${disLlm} onclick="uiReviewTask()">⊙ Review</button>
+      </div>
+      <div class="selection-controls">
+        ${selectAllBtn}
+      </div>
     </div>`;
 
   const phaseSections = phases.map(ph => {
@@ -712,10 +756,16 @@ function _getUiTask() {
 }
 
 function uiRunTask() {
-  const t = _getUiTask();
-  if (t) {
-    const autoDone = $id('action-auto-done')?.checked ?? true;
-    openRunModal(state.selectedPlanId, t.id, t.title, autoDone);
+  const autoDone = $id('action-auto-done')?.checked ?? true;
+
+  // If bulk selection exists, run bulk; otherwise run single task
+  if (state.bulkSelectedTaskIds && state.bulkSelectedTaskIds.length > 0) {
+    runBulkTasks(state.selectedPlanId, state.bulkSelectedTaskIds, '', autoDone);
+  } else {
+    const t = _getUiTask();
+    if (t) {
+      openRunModal(state.selectedPlanId, t.id, t.title, autoDone);
+    }
   }
 }
 
@@ -743,10 +793,29 @@ function uiBlockTask() {
   openBlockModal(state.selectedPlanId, t.id, t.title);
 }
 
-function uiBulkRunTasks(planId) {
-  if (!state.bulkSelectedTaskIds || state.bulkSelectedTaskIds.length === 0) return;
-  const autoDone = $id('action-auto-done') ? $id('action-auto-done').checked : true;
-  runBulkTasks(planId, state.bulkSelectedTaskIds, '', autoDone);
+function handleStatusChange(newStatus) {
+  const t = _getUiTask();
+  if (!t) return;
+
+  // Convert status change to appropriate action
+  if (newStatus === 'DONE') {
+    openDoneModal(state.selectedPlanId, t.id, t.title);
+  } else if (newStatus === 'BLOCKED') {
+    openBlockModal(state.selectedPlanId, t.id, t.title);
+  } else if (newStatus === 'IN_PROGRESS') {
+    // Just select the task (it will be marked IN_PROGRESS when running)
+    uiSelectTask();
+  } else if (newStatus === 'TODO') {
+    // Reset to TODO — could add a confirmation here
+    markTaskTodo(state.selectedPlanId, t.id);
+  }
+}
+
+async function markTaskTodo(planId, taskId) {
+  // Simple update to reset status to TODO
+  await api.updateTask(planId, taskId, { status: 'TODO' });
+  await renderPanelFor(planId);
+  await refreshSidebar();
 }
 
 // ── Legacy actions ───────────────────────────────────────────────────────────
@@ -890,16 +959,13 @@ async function _startPostStream(url, body, { onMeta, onText, onDone, onError, on
 
 // ── Run task / Output tab ───────────────────────────────────────────────────
 
-function runTask(planId, taskId, comment = '', autoDone = true) {
+async function runTask(planId, taskId, comment = '', autoDone = true) {
   if (state.outputEventSource) {
     state.outputEventSource.close();
     state.outputEventSource = null;
   }
 
-  state.outputText = '';
   state.outputRunning = true;
-  state._outputMeta = '';
-  state._outputDone = false;
 
   // Get task title from the current plan
   let taskTitle = '';
@@ -908,61 +974,31 @@ function runTask(planId, taskId, comment = '', autoDone = true) {
     if (task) taskTitle = task.title || '';
   }
 
-  // Create/select a terminal for this task
-  const taskTerminal = createTaskTerminal(taskId, taskTitle);
-  if (!taskTerminal || !taskTerminal.term) {
-    console.error('[runTask] Failed to create terminal for task', taskId);
-    return;
-  }
-  taskTerminal.term.clear();
-  taskTerminal.term.write('⏳ Preparing task execution...\n');
-  console.log('[runTask] Terminal created and selected:', taskTerminal.id);
+  try {
+    const params = new URLSearchParams();
+    if (comment) params.append('comment', comment);
+    if (autoDone) params.append('auto_done', 'true');
 
-  const params = new URLSearchParams();
-  if (comment) params.append('comment', comment);
-  if (autoDone) params.append('auto_done', 'true');
-
-  const url = `/api/tracks/${planId}/tasks/${taskId}/run?${params.toString()}`;
-  console.log('[runTask] Starting EventSource:', url);
-
-  const es = new EventSource(url);
-  state.outputEventSource = es;
-
-  es.onopen = () => {
-    console.log('[runTask] EventSource opened successfully');
-    taskTerminal.term.write('⏳ Running task…\n');
-  };
-
-  es.onmessage = (evt) => {
-    const data = evt.data;
-    console.log('[runTask] Message received:', data.slice(0, 50));
-
-    if (data === '__DONE__') {
-      es.close();
-      state.outputEventSource = null;
+    // Prepare the task server-side: switch to task, build prompt, save to temp file
+    const resp = await fetch(`/api/tracks/${planId}/tasks/${taskId}/prepare-run?${params}`);
+    if (!resp.ok) {
+      const err = await resp.text();
+      console.error('[runTask] Error preparing task:', err);
       state.outputRunning = false;
-      state._outputDone = true;
-      taskTerminal.term.write('\n✓ Done\n');
-      refresh();
       return;
     }
-    if (data.startsWith('__META__ ')) {
-      state._outputMeta = data.slice(9);
-      return;
-    }
-    const chunk = stripAnsi(data);
-    state.outputText += chunk;
-    taskTerminal.term.write(chunk);
-  };
 
-  es.onerror = (error) => {
-    console.error('[runTask] EventSource error:', error, 'readyState:', es.readyState);
-    es.close();
-    state.outputEventSource = null;
+    const { token, task_title } = await resp.json();
+    if (task_title) taskTitle = task_title;
+
+    // Open a real interactive PTY terminal with the command injected via token
+    createTaskTerminal(taskId, taskTitle, token);
     state.outputRunning = false;
-    const errorMsg = `\n⚠ Connection error (readyState: ${es.readyState})\nCheck browser console for details.\n`;
-    taskTerminal.term.write(errorMsg);
-  };
+    refresh();
+  } catch (e) {
+    console.error('[runTask] Error:', e);
+    state.outputRunning = false;
+  }
 }
 
 function runBulkTasks(trackId, taskIds, comment = '', autoDone = true) {
@@ -976,16 +1012,15 @@ function runBulkTasks(trackId, taskIds, comment = '', autoDone = true) {
   state._outputMeta = '';
   state._outputDone = false;
 
-  // Create terminals for all tasks upfront
+  // Create streaming terminals for all tasks upfront (non-interactive, bulk mode)
   const taskTerminals = {};
   for (const taskId of taskIds) {
-    // Get task title from the current plan
     let taskTitle = '';
     if (state.currentPlan && state.currentPlan.tasks) {
       const task = state.currentPlan.tasks.find(t => t.id === taskId);
       if (task) taskTitle = task.title || '';
     }
-    const terminal = createTaskTerminal(taskId, taskTitle);
+    const terminal = createStreamTerminal(taskId, taskTitle);
     terminal.term.clear();
     taskTerminals[taskId] = terminal;
   }
@@ -1292,28 +1327,29 @@ function addTerminal() {
   return entry;
 }
 
-function createTaskTerminal(taskId, taskTitle = '') {
+// Creates an interactive PTY terminal for a task (used by runTask).
+// Pass a token returned by /api/.../prepare-run to auto-inject the command.
+function createTaskTerminal(taskId, taskTitle = '', token = null) {
   if (state.consoleCollapsed) {
     $id('console-wrapper').classList.remove('collapsed');
     state.consoleCollapsed = false;
     $id('btn-console-toggle').textContent = '−';
   }
 
-  // Use taskId as the terminal identifier (format: -task-{taskId})
   const id = `-task-${taskId}`;
 
-  // Check if terminal already exists for this task
-  if (state.terminals.find(t => t.id === id)) {
-    selectTerminal(id);
-    renderTerminalTabs();
-    return state.terminals.find(t => t.id === id);
+  // If terminal already exists, close the old one and recreate (for re-runs)
+  const existing = state.terminals.find(t => t.id === id);
+  if (existing) {
+    try { if (existing.ws && existing.ws.readyState === WebSocket.OPEN) existing.ws.close(); } catch (_) {}
+    try { existing.term.dispose(); } catch (_) {}
+    existing.pane.remove();
+    state.terminals.splice(state.terminals.indexOf(existing), 1);
   }
 
-  // Store task title for display in tabs (first 4 words or full title if shorter)
   const titleWords = taskTitle.split(/\s+/).slice(0, 4).join(' ');
   const displayTitle = titleWords || taskId;
 
-  // Create pane div inside the shared container
   const pane = document.createElement('div');
   pane.className = 'terminal-pane';
   pane.id = `term-pane-${id}`;
@@ -1324,7 +1360,46 @@ function createTaskTerminal(taskId, taskTitle = '') {
   term.loadAddon(fitAddon);
   term.open(pane);
 
-  // Task terminals don't use WebSocket; they receive streamed output via term.write()
+  // Real PTY WebSocket — the user can interact with the LLM if it asks questions
+  const ws = _connectTerminalWs(id, term, fitAddon, token);
+  const entry = { id, term, fitAddon, ws, pane, taskTitle: displayTitle };
+  state.terminals.push(entry);
+
+  selectTerminal(id);
+  renderTerminalTabs();
+  return entry;
+}
+
+// Creates a streaming-only terminal for bulk task runs (no PTY WebSocket).
+function createStreamTerminal(taskId, taskTitle = '') {
+  if (state.consoleCollapsed) {
+    $id('console-wrapper').classList.remove('collapsed');
+    state.consoleCollapsed = false;
+    $id('btn-console-toggle').textContent = '−';
+  }
+
+  const id = `-task-${taskId}`;
+
+  const existing = state.terminals.find(t => t.id === id);
+  if (existing) {
+    selectTerminal(id);
+    renderTerminalTabs();
+    return existing;
+  }
+
+  const titleWords = taskTitle.split(/\s+/).slice(0, 4).join(' ');
+  const displayTitle = titleWords || taskId;
+
+  const pane = document.createElement('div');
+  pane.className = 'terminal-pane';
+  pane.id = `term-pane-${id}`;
+  $id('terminal-container').appendChild(pane);
+
+  const term = new Terminal(TERM_OPTS);
+  const fitAddon = new FitAddon.FitAddon();
+  term.loadAddon(fitAddon);
+  term.open(pane);
+
   const entry = { id, term, fitAddon, ws: null, pane, taskTitle: displayTitle };
   state.terminals.push(entry);
 
@@ -1385,9 +1460,12 @@ function _updateStatus(cls) {
   if (el) el.className = `console-status ${cls}`;
 }
 
-function _connectTerminalWs(id, term, fitAddon) {
+function _connectTerminalWs(id, term, fitAddon, token = null) {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const ws = new WebSocket(`${proto}://${location.host}/ws/terminal`);
+  const url = token
+    ? `${proto}://${location.host}/ws/terminal?token=${encodeURIComponent(token)}`
+    : `${proto}://${location.host}/ws/terminal`;
+  const ws = new WebSocket(url);
   ws.binaryType = 'arraybuffer';
 
   ws.onopen = () => {
