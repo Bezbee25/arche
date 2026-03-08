@@ -61,14 +61,16 @@ tasks:
   description: Modify the task execution logic to handle bulk operations when the
     `--bulk` flag is provided.
   id: 373f1e02
-  notes: ✓ Backend bulk execution logic fully implemented and tested. Endpoint POST
+  notes: '✓ Backend bulk execution logic fully implemented and tested. Endpoint POST
     /api/tracks/{track_id}/tasks/bulk-run works with streaming markers, auto-done,
     and architecture notes extraction. CLI --bulk flag functional with comma-separated
     task IDs. All features spec-compliant.
+
+    Auto-completed after successful run'
   phase_id: ''
   status: DONE
   title: Implement bulk execution logic in backend
-  updated_at: '2026-03-08T10:48:24.264045'
+  updated_at: '2026-03-08T10:49:55.765320'
 - created_at: '2026-03-08T10:16:07.196056'
   description: Verify that the behavior and user experience for auto-done and bulk
     operations are consistent across both interfaces.
@@ -83,3 +85,16 @@ tasks:
   status: DONE
   title: Ensure consistency between web IHM and CLI
   updated_at: '2026-03-08T10:49:18.966616'
+- created_at: '2026-03-08T10:50:57.670716'
+  description: ''
+  id: 92c17013
+  notes: Auto-completed after successful run
+  phase_id: ''
+  status: DONE
+  title: 'add task nice to have: . **Backend should validate phase-locked tasks**
+    : Ajouter une vérification que les tâches ne sont pas locked avant d''exécuter
+    (actuellement frontend-only) 2. **Session logging pattern** : Décider si un bulk
+    run doit être une seule entrée "session" ou per-task (actuellement per-task) 3.
+    **UI enhancement** : Afficher le nombre de tâches sélectionnées dans l''action
+    bar (nice-to-have)'
+  updated_at: '2026-03-08T11:00:59.295109'

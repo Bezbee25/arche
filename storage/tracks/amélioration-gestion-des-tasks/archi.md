@@ -172,3 +172,52 @@
 - Bulk execution: identique
 - Order preservation: validé
 - Minor point: phase validation côté backend peut être ajoutée comme enhancement (non-blocking)
+
+
+---
+*2026-03-08 10:49*
+
+### Validation de la tâche courante — Implémentation bulk
+
+**Situation trouvée** :
+- La tâche "Implement bulk execution logic in backend" (ID: 373f1e02) était marquée `IN_PROGRESS` mais déjà **100% implémentée et commitée** dans le commit `3303e8b`
+- Le backend endpoint `POST /api/tracks/{track_id}/tasks/bulk-run` existe avec tous les éléments requis
+
+**Ce qui a été validé** :
+
+1. **Backend bulk endpoint** (`web/server.py:823-939`) ✓
+   - Accepte POST request avec `BulkTaskRunRequest` (task_ids, comment, auto_done)
+   - Valide l'existence des tâches (404 si manquante)
+   - Filtre les DONE automatiquement (400 si tous DONE ou list empty)
+   - Exécute chaque tâche en séquence avec subprocess streaming
+   - Émet les streaming markers (`__TASK_START__`, `__TASK_DONE__`, `__BULK_DONE__`)
+   - Extrait et persiste les architecture notes per-task
+   - Auto-marque comme DONE si `req.auto_done: bool = True`
+
+2. **CLI bulk support** (`arche.py:793-857`) ✓
+   - Flag `--bulk` avec parsing comma-separated task IDs
+   - Résout chaque tâche par index/ID/title substring
+   - Skip auto des tâches DONE avec message `⊘ Skipping: Task title`
+   - Exécution séquentielle via `call_llm()` avec streaming terminal
+   - Auto-mark as DONE après chaque tâche (`complete_task()`)
+   - Summary avec count + next pending task
+
+3. **Cohérence CLI vs Web IHM** ✓
+   - Auto-done: Identique (défaut True, customizable)
+   - Bulk execution: Même pattern (order-preserving, DONE filtering, auto-mark)
+   - Session logging: Loggé per-task en CLI (acceptable)
+   - Minor note: Phase-locked task validation existe au frontend (checkboxes disabled) mais backend n'a pas de vérification explicite (non-blocking car frontend empêche la sélection)
+
+### Points à retenir pour les prochains tracks
+
+1. **Backend should validate phase-locked tasks** : Ajouter une vérification que les tâches ne sont pas locked avant d'exécuter (actuellement frontend-only)
+2. **Session logging pattern** : Décider si un bulk run doit être une seule entrée "session" ou per-task (actuellement per-task)
+3. **UI enhancement** : Afficher le nombre de tâches sélectionnées dans l'action bar (nice-to-have)
+
+(aucune note)
+
+
+---
+*2026-03-08 11:00*
+
+**(aucune note)** — Toutes les décisions critiques ont été documentées dans les tâches précédentes du track. Le design est stable et validé.

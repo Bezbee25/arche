@@ -595,21 +595,27 @@ def create_app() -> FastAPI:
                 await proc.stdin.drain()
                 proc.stdin.close()
 
+                line_count = 0
                 while True:
                     if cli == "claude":
                         line = await proc.stdout.readline()
                         if not line:
+                            print(f"[stream_task_run] EOF reached after {line_count} lines")
                             break
                         raw = line.decode("utf-8", errors="replace")
                         text = _parse_claude_json_line(raw)
                         if text:
+                            line_count += 1
                             output_lines.append(text)
                             sse_lines = text.split("\n")
                             sse = "\n".join(f"data: {l}" for l in sse_lines)
                             yield f"{sse}\n\n"
+                        else:
+                            print(f"[stream_task_run] Skipped unparseable line: {raw[:50]}")
                     else:
                         chunk = await proc.stdout.read(4096)
                         if not chunk:
+                            print(f"[stream_task_run] EOF reached (read mode)")
                             break
                         text = chunk.decode("utf-8", errors="replace")
                         output_lines.append(text)
@@ -617,7 +623,9 @@ def create_app() -> FastAPI:
                         sse = "\n".join(f"data: {l}" for l in lines)
                         yield f"{sse}\n\n"
 
+                print(f"[stream_task_run] Process ended, waiting for exit...")
                 await proc.wait()
+                print(f"[stream_task_run] Process exited with code {proc.returncode}")
 
                 output_str = "".join(output_lines)
                 tasks = _parse_task_list(output_str)
@@ -758,8 +766,10 @@ def create_app() -> FastAPI:
 
         async def generate():
             output_lines: list[str] = []
+            print(f"[stream_task_run] Starting stream for task {task_id}, cli={cli}, model={model}")
             yield f"data: __META__ {model} | {phase}\n\n"
             try:
+                print(f"[stream_task_run] Creating subprocess: {' '.join(cmd[:3])}...")
                 proc = await asyncio.create_subprocess_exec(
                     *cmd,
                     stdin=asyncio.subprocess.PIPE,
@@ -767,25 +777,33 @@ def create_app() -> FastAPI:
                     stderr=asyncio.subprocess.STDOUT,  # merge stderr → no deadlock
                     limit=10 * 1024 * 1024,  # 10 MB — Claude JSON lines can be large
                 )
+                print(f"[stream_task_run] Subprocess created, writing {len(prompt)} bytes to stdin")
                 proc.stdin.write(prompt.encode())
                 await proc.stdin.drain()  # flush buffer to the pipe
                 proc.stdin.close()
+                print("[stream_task_run] Starting to read from subprocess output...")
 
+                line_count = 0
                 while True:
                     if cli == "claude":
                         line = await proc.stdout.readline()
                         if not line:
+                            print(f"[stream_task_run] EOF reached after {line_count} lines")
                             break
                         raw = line.decode("utf-8", errors="replace")
                         text = _parse_claude_json_line(raw)
                         if text:
+                            line_count += 1
                             output_lines.append(text)
                             sse_lines = text.split("\n")
                             sse = "\n".join(f"data: {l}" for l in sse_lines)
                             yield f"{sse}\n\n"
+                        else:
+                            print(f"[stream_task_run] Skipped unparseable line: {raw[:50]}")
                     else:
                         chunk = await proc.stdout.read(4096)
                         if not chunk:
+                            print(f"[stream_task_run] EOF reached (read mode)")
                             break
                         text = chunk.decode("utf-8", errors="replace")
                         output_lines.append(text)
@@ -793,7 +811,9 @@ def create_app() -> FastAPI:
                         sse = "\n".join(f"data: {l}" for l in lines)
                         yield f"{sse}\n\n"
 
+                print(f"[stream_task_run] Process ended, waiting for exit...")
                 await proc.wait()
+                print(f"[stream_task_run] Process exited with code {proc.returncode}")
 
                 if not output_lines:
                     yield f"data: ⚠ Subprocess exited with no output (code {proc.returncode})\n\n"
@@ -810,6 +830,9 @@ def create_app() -> FastAPI:
                     from core.task_engine import complete_task
                     complete_task(track_id, task_id, "Auto-completed after successful run")
             except Exception as e:
+                print(f"[stream_task_run] Exception: {e}")
+                import traceback
+                traceback.print_exc()
                 yield f"data: ⚠ Error: {e}\n\n"
             finally:
                 yield "data: __DONE__\n\n"

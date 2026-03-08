@@ -38,12 +38,14 @@ MODEL_CLI = {
     "gemini": "gemini",
     "codex":  "codex",
     "gpt":    "codex",
+    "vibe":   "vibe",
+    "devstral": "vibe",
 }
 
 
 def detect_available_clis() -> list[str]:
     available = []
-    for cli in ["claude", "gemini", "codex"]:
+    for cli in ["claude", "gemini", "codex", "vibe"]:
         if shutil.which(cli):
             available.append(cli)
     return available
@@ -145,6 +147,9 @@ def _build_command(
 
     elif cli == "codex":
         return ["codex", "-q"]
+
+    elif cli == "vibe":
+        return ["vibe", "-p"]
 
     return ["claude", "-p"]
 

@@ -1,0 +1,73 @@
+tasks:
+- created_at: '2026-03-08T11:05:22.771061'
+  description: 'Reproduce and identify the root cause of: actuelement si le texte
+    dépasse la section, on voit la fin du texte, si on veut remonter, ça remet en
+    bas au bout de quelques seconde, il faut que ça reste au même endroit quand une
+    personne deplace l''ascenseur et ça bloque l''autorefresh l''on bloque l''autorefresh,
+    d''ailleur en dehors de oupout il n''y en a pas besoin'
+  id: 893552ce
+  notes: 'Root cause identified: Auto-refresh every 3 seconds (setInterval(refresh,
+    3000)) calls renderTabContent() which recreates DOM and resets scroll. When user
+    manually scrolls up in spec/task/output sections, the polling forces scroll back
+    to bottom after 3 seconds (via pre.scrollTop = pre.scrollHeight in renderOutputPane
+    and streaming handlers).
+
+    Auto-completed (bulk execution, task 1/2)'
+  phase_id: ''
+  status: DONE
+  title: Investigate root cause
+  updated_at: '2026-03-08T11:08:42.916309'
+- created_at: '2026-03-08T11:05:22.771061'
+  description: Apply the fix based on the investigation findings
+  id: 8953be2a
+  notes: 'Implementation complete: (1) Added state._userScrolling and state._autoRefreshBlocked
+    flags (2) setupScrollDetection() registers passive scroll listeners on spec/tasks/output
+    tabs (3) Scroll detection blocks polling for 5 seconds after user stops scrolling
+    (4) Created _autoScrollOutput() helper for selective auto-scroll in output only
+    (5) Replaced all pre.scrollTop = pre.scrollHeight with _autoScrollOutput() calls
+    (5 locations) (6) Modified refresh() to skip panel re-render when user is scrolling
+
+    Auto-completed (bulk execution, task 2/2)'
+  phase_id: ''
+  status: DONE
+  title: Implement fix
+  updated_at: '2026-03-08T11:08:58.733500'
+- created_at: '2026-03-08T11:10:46.352700'
+  description: Remove or skip any auto-scroll / scrollTop logic that runs on spec
+    and task panels — these sections are static content and don't need automatic scrolling.
+  id: 8fa4e800
+  notes: ''
+  phase_id: ''
+  status: TODO
+  title: Disable auto-scroll in spec and task sections
+  updated_at: '2026-03-08T11:10:46.352700'
+- created_at: '2026-03-08T11:10:46.352700'
+  description: Track whether the user has manually scrolled up in the output panel
+    (e.g., by comparing scrollTop + clientHeight vs scrollHeight). Set a `userScrolled`
+    flag when a manual scroll is detected.
+  id: d23d8913
+  notes: ''
+  phase_id: ''
+  status: TODO
+  title: Add user-scroll detection to output panel
+  updated_at: '2026-03-08T11:10:46.352700'
+- created_at: '2026-03-08T11:10:46.352700'
+  description: In the auto-refresh / streaming update logic for the output panel,
+    skip the auto-scroll-to-bottom when the `userScrolled` flag is set. Only auto-scroll
+    when the user is already at (or near) the bottom.
+  id: 9bc0d0c7
+  notes: ''
+  phase_id: ''
+  status: TODO
+  title: Preserve scroll position in output panel when `userScrolled` is true
+  updated_at: '2026-03-08T11:10:46.352700'
+- created_at: '2026-03-08T11:10:46.352700'
+  description: When a new task run begins or the output panel is cleared, reset the
+    `userScrolled` flag so auto-scroll resumes naturally from the start of the new
+    output.
+  id: f3612484
+  notes: ''
+  phase_id: ''
+  status: TODO
+  title: Reset `userScrolled` flag when task output is reset or a new task starts
+  updated_at: '2026-03-08T11:10:46.352700'

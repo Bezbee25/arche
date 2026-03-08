@@ -38,22 +38,25 @@ tasks:
   id: c6143215
   notes: 'Completed — commit fd9a877: runTask() and runBulkTasks() now stream output
     to dedicated task terminals instead of tasks section DOM. Output persists in terminals
-    section independent of track navigation. Each terminal ID format: -task-{taskId}'
+    section independent of track navigation. Each terminal ID format: -task-{taskId}
+
+    Auto-completed (bulk execution, task 4/5)'
   phase_id: ''
   status: DONE
   title: Redirect task output streaming into the task terminal
-  updated_at: '2026-03-08T11:40:00'
+  updated_at: '2026-03-08T11:27:37.172221'
 - created_at: '2026-03-08T11:18:40.502839'
   description: Strip out the output panel, output container, or inline result area
     from the tasks section — both the rendering logic in JS and the corresponding
     HTML/CSS. Ensure no output is shown in the tasks section after a task runs.
   id: 8eaa1fb5
-  notes: ''
+  notes: Auto-completed (bulk execution, task 5/5)
   phase_id: ''
-  status: TODO
+  status: DONE
   title: Remove output display from the tasks section
-  updated_at: '2026-03-08T11:18:40.502839'
-- created_at: '2026-03-08T11:18:40.502839'
+  updated_at: '2026-03-08T11:29:09.208439'
+- blocked_reason: no need
+  created_at: '2026-03-08T11:18:40.502839'
   description: Manually test that switching tracks does not clear or hide task terminals
     — the terminals section retains all running/completed task outputs regardless
     of which track is active. Fix any state or rendering logic that incorrectly ties
@@ -61,6 +64,15 @@ tasks:
   id: 40597de6
   notes: ''
   phase_id: ''
-  status: TODO
+  status: BLOCKED
   title: Verify terminal persistence across track navigation
-  updated_at: '2026-03-08T11:18:40.502839'
+  updated_at: '2026-03-08T16:59:57.613101'
+- created_at: '2026-03-08T16:59:46.771066'
+  description: ''
+  id: ca98a3bb
+  notes: ''
+  phase_id: ''
+  status: IN_PROGRESS
+  title: debug, output is still in the task tab and no ouput is added to the terminal,
+    and when i start a taks I see nothing
+  updated_at: '2026-03-08T17:00:43.130063'

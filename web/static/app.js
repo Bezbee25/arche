@@ -903,18 +903,32 @@ function runTask(planId, taskId, comment = '', autoDone = true) {
 
   // Create/select a terminal for this task
   const taskTerminal = createTaskTerminal(taskId);
+  if (!taskTerminal || !taskTerminal.term) {
+    console.error('[runTask] Failed to create terminal for task', taskId);
+    return;
+  }
   taskTerminal.term.clear();
+  console.log('[runTask] Terminal created and selected:', taskTerminal.id);
 
   const params = new URLSearchParams();
   if (comment) params.append('comment', comment);
   if (autoDone) params.append('auto_done', 'true');
 
   const url = `/api/tracks/${planId}/tasks/${taskId}/run?${params.toString()}`;
+  console.log('[runTask] Starting EventSource:', url);
+
   const es = new EventSource(url);
   state.outputEventSource = es;
 
+  es.onopen = () => {
+    console.log('[runTask] EventSource opened successfully');
+    taskTerminal.term.write('⏳ Running task…\n');
+  };
+
   es.onmessage = (evt) => {
     const data = evt.data;
+    console.log('[runTask] Message received:', data.slice(0, 50));
+
     if (data === '__DONE__') {
       es.close();
       state.outputEventSource = null;
@@ -933,11 +947,13 @@ function runTask(planId, taskId, comment = '', autoDone = true) {
     taskTerminal.term.write(chunk);
   };
 
-  es.onerror = () => {
+  es.onerror = (error) => {
+    console.error('[runTask] EventSource error:', error, 'readyState:', es.readyState);
     es.close();
     state.outputEventSource = null;
     state.outputRunning = false;
-    taskTerminal.term.write('\n⚠ Connection error\n');
+    const errorMsg = `\n⚠ Connection error (readyState: ${es.readyState})\nCheck browser console for details.\n`;
+    taskTerminal.term.write(errorMsg);
   };
 }
 
