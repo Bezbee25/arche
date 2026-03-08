@@ -901,8 +901,15 @@ function runTask(planId, taskId, comment = '', autoDone = true) {
   state._outputMeta = '';
   state._outputDone = false;
 
+  // Get task title from the current plan
+  let taskTitle = '';
+  if (state.currentPlan && state.currentPlan.tasks) {
+    const task = state.currentPlan.tasks.find(t => t.id === taskId);
+    if (task) taskTitle = task.title || '';
+  }
+
   // Create/select a terminal for this task
-  const taskTerminal = createTaskTerminal(taskId);
+  const taskTerminal = createTaskTerminal(taskId, taskTitle);
   if (!taskTerminal || !taskTerminal.term) {
     console.error('[runTask] Failed to create terminal for task', taskId);
     return;
@@ -972,7 +979,13 @@ function runBulkTasks(trackId, taskIds, comment = '', autoDone = true) {
   // Create terminals for all tasks upfront
   const taskTerminals = {};
   for (const taskId of taskIds) {
-    const terminal = createTaskTerminal(taskId);
+    // Get task title from the current plan
+    let taskTitle = '';
+    if (state.currentPlan && state.currentPlan.tasks) {
+      const task = state.currentPlan.tasks.find(t => t.id === taskId);
+      if (task) taskTitle = task.title || '';
+    }
+    const terminal = createTaskTerminal(taskId, taskTitle);
     terminal.term.clear();
     taskTerminals[taskId] = terminal;
   }
@@ -1240,6 +1253,7 @@ const TERM_OPTS = {
   cursorBlink: true,
   allowTransparency: true,
   scrollback: 1000,
+  wordWrap: true,
 };
 
 function setupTerminal() {
@@ -1278,7 +1292,7 @@ function addTerminal() {
   return entry;
 }
 
-function createTaskTerminal(taskId) {
+function createTaskTerminal(taskId, taskTitle = '') {
   if (state.consoleCollapsed) {
     $id('console-wrapper').classList.remove('collapsed');
     state.consoleCollapsed = false;
@@ -1295,6 +1309,10 @@ function createTaskTerminal(taskId) {
     return state.terminals.find(t => t.id === id);
   }
 
+  // Store task title for display in tabs (first 4 words or full title if shorter)
+  const titleWords = taskTitle.split(/\s+/).slice(0, 4).join(' ');
+  const displayTitle = titleWords || taskId;
+
   // Create pane div inside the shared container
   const pane = document.createElement('div');
   pane.className = 'terminal-pane';
@@ -1307,7 +1325,7 @@ function createTaskTerminal(taskId) {
   term.open(pane);
 
   // Task terminals don't use WebSocket; they receive streamed output via term.write()
-  const entry = { id, term, fitAddon, ws: null, pane };
+  const entry = { id, term, fitAddon, ws: null, pane, taskTitle: displayTitle };
   state.terminals.push(entry);
 
   selectTerminal(id);
@@ -1345,8 +1363,8 @@ function renderTerminalTabs() {
   const tabs = $id('terminal-tabs');
   const canClose = state.terminals.length > 1;
   tabs.innerHTML = state.terminals.map(t => {
-    // Display name: -task-{taskId} or Term N
-    const displayName = t.id.startsWith('-task-') ? t.id : `Term&nbsp;${t.id.slice(1)}`;
+    // Display name: task title (first 4 words) for -task-* or Term N for regular terminals
+    const displayName = t.taskTitle ? t.taskTitle : `Term&nbsp;${t.id.slice(1)}`;
     return `
     <button class="term-tab ${t.id === state.activeTerminalId ? 'active' : ''}"
             onclick="selectTerminal('${t.id}')">
