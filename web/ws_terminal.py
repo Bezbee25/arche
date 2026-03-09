@@ -13,7 +13,7 @@ from fastapi.websockets import WebSocket, WebSocketDisconnect, WebSocketState
 class TerminalManager:
     """Manages WebSocket ↔ pty sessions."""
 
-    async def handle(self, websocket: WebSocket, init_cmd: str | None = None) -> None:
+    async def handle(self, websocket: WebSocket, init_cmd: str | None = None, cols: int = 220, rows: int = 50) -> None:
         await websocket.accept()
 
         try:
@@ -28,18 +28,18 @@ class TerminalManager:
         # Determine shell
         shell = os.environ.get("SHELL", shutil.which("bash") or "/bin/sh")
 
-        # Get working directory from query params if available
         cwd = str(Path.cwd())
 
         try:
             proc = ptyprocess.PtyProcess.spawn(
                 [shell],
                 cwd=cwd,
+                dimensions=(rows, cols),
                 env={
                     **os.environ,
                     "TERM": "xterm-256color",
-                    "COLUMNS": "220",
-                    "LINES": "50",
+                    "COLUMNS": str(cols),
+                    "LINES": str(rows),
                 },
             )
         except Exception as e:

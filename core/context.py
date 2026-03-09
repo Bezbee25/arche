@@ -71,6 +71,16 @@ def build_task_prompt(track_id: str, track_meta: dict, comment: str = "") -> str
         f"Track courant : **{track_meta.get('name', track_id)}**\n"
     )
 
+    protected_paths = project.get("protected_paths", [])
+    if protected_paths:
+        paths_list = "\n".join(f"  - {p}" for p in protected_paths)
+        parts.append(
+            f"## CHEMINS PROTÉGÉS — LECTURE SEULE\n\n"
+            f"Tu peux lire ces fichiers/répertoires pour contexte, "
+            f"mais tu NE DOIS EN AUCUN CAS les modifier (ni Write, ni Edit) :\n\n"
+            f"{paths_list}"
+        )
+
     if spec and spec.strip():
         parts.append(f"## Spec du track\n\n{spec}")
 

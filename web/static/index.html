@@ -47,6 +47,7 @@
         <button id="btn-web-refresh" class="btn-sm btn-ghost" title="Refresh">↻</button>
         <button id="btn-docs" class="btn-sm btn-ghost" title="Documentation">❓</button>
         <button id="btn-theme" class="btn-ghost btn-sm" title="Change theme">◑ Theme</button>
+        <button id="btn-settings" class="btn-ghost btn-sm" title="Project settings">⚙ Settings</button>
       </span>
     </header>
 
@@ -241,7 +242,8 @@
       <div class="modal-actions">
         <button id="modal-cancel" class="btn-ghost">Cancel</button>
         <button id="modal-create-only" class="btn-ghost btn-sm">Create only</button>
-        <button id="modal-create" class="btn-primary">Create &amp; Generate tasks ✦</button>
+        <button id="modal-create-phases" class="btn-ghost btn-sm">Create &amp; Phase ✦</button>
+        <button id="modal-create" class="btn-primary">Create &amp; Tasks ✦</button>
       </div>
     </div>
   </div>
@@ -378,6 +380,33 @@
     └── sessions/         ← {date}.md — full LLM output per session</pre>
         </div>
 
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings modal -->
+  <div id="modal-settings-overlay" class="hidden modal-overlay">
+    <div class="modal" id="modal-settings" style="max-width:520px">
+      <div class="docs-header">
+        <h3>⚙ Project Settings</h3>
+        <button id="settings-close" class="btn-ghost btn-sm">✕</button>
+      </div>
+      <div style="padding:16px 0 8px">
+        <label style="font-size:13px;font-weight:600;color:var(--text)">
+          Protected paths <span style="font-weight:400;color:var(--text-dim)">(read-only for LLM)</span>
+        </label>
+        <div style="font-size:12px;color:var(--text-muted);margin:6px 0 10px">
+          One path per line. Supports glob patterns (e.g. <code style="color:var(--cyan)">vendor/**</code>).
+          The LLM can read these files for context but cannot modify them.
+        </div>
+        <textarea id="settings-protected-paths"
+          style="width:100%;box-sizing:border-box;height:140px;background:var(--bg);border:1px solid var(--border);
+                 border-radius:4px;color:var(--text);font-family:monospace;font-size:12px;padding:8px;resize:vertical"
+          placeholder="lib/otherprojects/flq_api/vendor/**&#10;lib/otherprojects/flq_api/routes/promo.py"></textarea>
+      </div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;padding-top:8px">
+        <button class="btn-sm" id="settings-cancel">Cancel</button>
+        <button class="btn-primary" id="settings-save" style="padding:5px 16px;font-size:13px">Save</button>
       </div>
     </div>
   </div>

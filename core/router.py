@@ -135,7 +135,11 @@ def _build_command(
 ) -> list[str]:
     """Build the CLI command. Prompt is passed via stdin, not as an argument."""
     if cli == "claude":
-        cmd = ["claude", "-p", "--model", model]
+        # --dangerously-skip-permissions is required for non-interactive (batch) mode:
+        # without it, Claude Code blocks file writes waiting for user confirmation,
+        # which hangs forever since stdin is a pipe.
+        # Access restrictions are enforced via protected_paths in the prompt instead.
+        cmd = ["claude", "-p", "--dangerously-skip-permissions", "--model", model]
         if system:
             cmd += ["--system-prompt", system]
         if allowed_tools:

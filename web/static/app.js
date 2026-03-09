@@ -245,7 +245,7 @@ function renderPlanHeader(plan) {
           <div class="plan-progress-fill" style="width:${pct}%"></div>
         </div>
       </span>
-      ${plan.status !== 'ACTIVE' && plan.status !== 'DONE' ? `<button class="btn-ghost btn-sm" onclick="switchToPlan('${plan.id}')">Activate</button>` : ''}
+      ${plan.status !== 'ACTIVE' && plan.status !== 'DONE' ? `<button class="btn-blue" onclick="switchToPlan('${plan.id}')">Activate</button>` : ''}
       ${plan.status === 'ACTIVE' ? `<button class="btn-ghost btn-sm btn-danger-ghost" onclick="confirmDoneTrack('${plan.id}')">✓ Track done</button>` : ''}
     </div>`;
 }
@@ -463,8 +463,14 @@ function renderTasks(plan) {
 function selectAllTasks(planId) {
   const plan = state._lastPlan;
   if (!plan) return;
+  // Exclude tasks from LOCKED or DONE phases
+  const excludedPhaseIds = new Set(
+    (plan.phases || []).filter(p => p.status === 'LOCKED' || p.status === 'DONE').map(p => p.id)
+  );
   const allTasks = plan.tasks || [];
-  state.bulkSelectedTaskIds = allTasks.map(t => t.id);
+  state.bulkSelectedTaskIds = allTasks
+    .filter(t => (t.status || 'TODO') === 'TODO' && !excludedPhaseIds.has(t.phase_id))
+    .map(t => t.id);
   renderTasks(plan);
 }
 
@@ -577,6 +583,15 @@ function renderTasksWithPhases(plan, phases) {
       ? `<div class="phase-empty">No tasks yet. <button class="btn-ghost btn-sm" onclick="generateTasksForPhase('${planId}','${ph.id}')">⚡ Generate</button></div>`
       : '';
 
+    // Per-phase checkbox: select/deselect all TODO tasks in this phase
+    const phaseTodoTasks = phaseTasks.filter(t => (t.status || 'TODO') === 'TODO');
+    const phaseSelectedCount = phaseTodoTasks.filter(t => state.bulkSelectedTaskIds.includes(t.id)).length;
+    const phaseAllSelected = phaseTodoTasks.length > 0 && phaseSelectedCount === phaseTodoTasks.length;
+    const phaseCheckbox = !isLocked && phaseTodoTasks.length > 0
+      ? `<input type="checkbox" class="phase-select-checkbox" data-phase-id="${ph.id}"
+             title="Select all TODO tasks in this phase" ${phaseAllSelected ? 'checked' : ''}>`
+      : '';
+
     return `
       <div class="phase-section ${isLocked ? 'phase-locked' : ''}" data-phase-id="${ph.id}">
         <div class="phase-header">
@@ -591,6 +606,7 @@ function renderTasksWithPhases(plan, phases) {
           <span class="phase-actions">
             ${!isLocked && phaseTasks.length === 0 ? `<button class="btn-ghost btn-sm" onclick="generateTasksForPhase('${planId}','${ph.id}')">⚡ Tasks</button>` : ''}
             <button class="btn-ghost btn-sm btn-danger-ghost" title="Delete phase and all its tasks" onclick="uiDeletePhase('${planId}','${ph.id}','${escHtml(ph.name)}')">✕</button>
+            ${phaseCheckbox}
           </span>
         </div>
         ${ph.description ? `<div class="phase-description">${escHtml(ph.description)}</div>` : ''}
@@ -655,6 +671,32 @@ function renderTasksWithPhases(plan, phases) {
       e.stopPropagation();
       const { taskId, planId: pid } = sel.dataset;
       await api.updateTask(pid, taskId, { type: e.target.value });
+    });
+  });
+
+  // Per-phase select checkboxes
+  pane.querySelectorAll('.phase-select-checkbox').forEach(checkbox => {
+    const phaseId = checkbox.dataset.phaseId;
+    const phase = phases.find(p => p.id === phaseId);
+    if (!phase) return;
+    const phaseTodoIds = (phase.tasks || [])
+      .filter(t => (t.status || 'TODO') === 'TODO')
+      .map(t => t.id);
+    // Set indeterminate if some (but not all) are selected
+    const selectedCount = phaseTodoIds.filter(id => state.bulkSelectedTaskIds.includes(id)).length;
+    if (selectedCount > 0 && selectedCount < phaseTodoIds.length) checkbox.indeterminate = true;
+
+    checkbox.addEventListener('click', e => e.stopPropagation());
+    checkbox.addEventListener('change', e => {
+      e.stopPropagation();
+      if (e.target.checked) {
+        phaseTodoIds.forEach(id => {
+          if (!state.bulkSelectedTaskIds.includes(id)) state.bulkSelectedTaskIds.push(id);
+        });
+      } else {
+        state.bulkSelectedTaskIds = state.bulkSelectedTaskIds.filter(id => !phaseTodoIds.includes(id));
+      }
+      renderTasksWithPhases(plan, phases);
     });
   });
 }
@@ -1070,6 +1112,14 @@ async function _startPostStream(url, body, { onMeta, onText, onDone, onError, on
 
 // ── Run task / Output tab ───────────────────────────────────────────────────
 
+// Returns the track name to use as terminal tab title.
+function _getTerminalTitle(planId) {
+  const plan = state._lastPlan;
+  if (plan && plan.name) return plan.name;
+  if (plan && plan.id) return plan.id;
+  return planId || 'Task';
+}
+
 async function runTask(planId, taskId, comment = '', autoDone = true) {
   if (state.outputEventSource) {
     state.outputEventSource.close();
@@ -1078,12 +1128,7 @@ async function runTask(planId, taskId, comment = '', autoDone = true) {
 
   state.outputRunning = true;
 
-  // Get task title from the current plan
-  let taskTitle = '';
-  if (state.currentPlan && state.currentPlan.tasks) {
-    const task = state.currentPlan.tasks.find(t => t.id === taskId);
-    if (task) taskTitle = task.title || '';
-  }
+  const tabTitle = _getTerminalTitle(planId);
 
   try {
     const params = new URLSearchParams();
@@ -1099,11 +1144,10 @@ async function runTask(planId, taskId, comment = '', autoDone = true) {
       return;
     }
 
-    const { token, task_title } = await resp.json();
-    if (task_title) taskTitle = task_title;
+    const { token } = await resp.json();
 
     // Open a real interactive PTY terminal with the command injected via token
-    createTaskTerminal(taskId, taskTitle, token);
+    createTaskTerminal(taskId, tabTitle, token);
     state.outputRunning = false;
     refresh();
   } catch (e) {
@@ -1123,23 +1167,10 @@ function runBulkTasks(trackId, taskIds, comment = '', autoDone = true) {
   state._outputMeta = '';
   state._outputDone = false;
 
-  // Create streaming terminals for all tasks upfront (non-interactive, bulk mode)
-  const taskTerminals = {};
-  for (const taskId of taskIds) {
-    let taskTitle = '';
-    if (state.currentPlan && state.currentPlan.tasks) {
-      const task = state.currentPlan.tasks.find(t => t.id === taskId);
-      if (task) taskTitle = task.title || '';
-    }
-    const terminal = createStreamTerminal(taskId, taskTitle);
-    terminal.term.clear();
-    taskTerminals[taskId] = terminal;
-  }
-
-  // Select the first task's terminal
-  if (taskIds.length > 0) {
-    selectTerminal(`-task-${taskIds[0]}`);
-  }
+  // Single terminal for all bulk tasks — tab name = track name
+  const bulkTabTitle = _getTerminalTitle(trackId);
+  const bulkTerminal = createStreamTerminal(`bulk-${trackId}`, bulkTabTitle);
+  bulkTerminal.term.clear();
 
   const payload = {
     task_ids: taskIds,
@@ -1155,16 +1186,13 @@ function runBulkTasks(trackId, taskIds, comment = '', autoDone = true) {
     body: JSON.stringify(payload),
   }).then(response => {
     if (!response.ok) {
-      if (taskIds.length > 0) {
-        taskTerminals[taskIds[0]].term.write(`\n⚠ Error: ${response.statusText}\n`);
-      }
+      bulkTerminal.term.write(`\n⚠ Error: ${response.statusText}\n`);
       return;
     }
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
-    let currentTaskIndex = -1;
 
     const processStream = async () => {
       try {
@@ -1186,76 +1214,42 @@ function runBulkTasks(trackId, taskIds, comment = '', autoDone = true) {
             if (line.startsWith('data: ')) {
               const data = line.slice(6);
 
-              // Handle bulk completion marker
               if (data.startsWith('__BULK_DONE__')) {
                 state.outputRunning = false;
                 state._outputDone = true;
-                if (currentTaskIndex >= 0 && currentTaskIndex < taskIds.length) {
-                  const taskId = taskIds[currentTaskIndex];
-                  if (taskTerminals[taskId]) {
-                    taskTerminals[taskId].term.write('\n✓ Bulk execution complete\n');
-                  }
-                }
+                bulkTerminal.term.write('\n✓ Bulk execution complete\n');
                 refresh();
                 return;
               }
 
-              // Handle task start marker (format: "num/total title")
               if (data.startsWith('__TASK_START__')) {
                 const taskInfo = data.slice(14).trim();
-                // Extract task number from "num/total ..." format
                 const match = taskInfo.match(/^(\d+)\/\d+\s+(.*)$/);
                 if (match) {
-                  currentTaskIndex = parseInt(match[1], 10) - 1; // Convert to 0-based index
-                  if (currentTaskIndex >= 0 && currentTaskIndex < taskIds.length) {
-                    const taskId = taskIds[currentTaskIndex];
-                    if (taskTerminals[taskId]) {
-                      selectTerminal(`-task-${taskId}`);
-                      taskTerminals[taskId].term.write(`\n━━ ${match[2]}\n`);
-                    }
-                  }
+                  bulkTerminal.term.write(`\n━━ ${match[1]}. ${match[2]} ━━\n\n`);
                 }
                 continue;
               }
 
-              // Handle task done marker
               if (data.startsWith('__TASK_DONE__')) {
-                if (currentTaskIndex >= 0 && currentTaskIndex < taskIds.length) {
-                  const taskId = taskIds[currentTaskIndex];
-                  if (taskTerminals[taskId]) {
-                    taskTerminals[taskId].term.write('\n✓ Task complete\n\n');
-                  }
-                }
+                bulkTerminal.term.write('\n✓ Task complete\n\n');
                 continue;
               }
 
-              // Regular output
               const chunk = stripAnsi(data);
               state.outputText += chunk;
-              if (currentTaskIndex >= 0 && currentTaskIndex < taskIds.length) {
-                const taskId = taskIds[currentTaskIndex];
-                if (taskTerminals[taskId]) {
-                  taskTerminals[taskId].term.write(chunk);
-                }
-              }
+              bulkTerminal.term.write(chunk);
             }
           }
         }
       } catch (err) {
-        if (currentTaskIndex >= 0 && currentTaskIndex < taskIds.length) {
-          const taskId = taskIds[currentTaskIndex];
-          if (taskTerminals[taskId]) {
-            taskTerminals[taskId].term.write(`\n⚠ Stream error: ${err.message}\n`);
-          }
-        }
+        bulkTerminal.term.write(`\n⚠ Stream error: ${err.message}\n`);
       }
     };
 
     processStream();
   }).catch(err => {
-    if (taskIds.length > 0 && taskTerminals[taskIds[0]]) {
-      taskTerminals[taskIds[0]].term.write(`\n⚠ Network error: ${err.message}\n`);
-    }
+    bulkTerminal.term.write(`\n⚠ Network error: ${err.message}\n`);
   });
 }
 
@@ -1466,6 +1460,11 @@ function createTaskTerminal(taskId, taskTitle = '', token = null) {
   pane.id = `term-pane-${id}`;
   $id('terminal-container').appendChild(pane);
 
+  // Force synchronous reflow so the container has correct dimensions before xterm.js
+  // measures character size (xterm caches charWidth at open() time; if the container
+  // was display:none it would cache 0 and fitAddon.fit() would never fix it).
+  void $id('terminal-container').offsetWidth;
+
   const term = new Terminal(TERM_OPTS);
   const fitAddon = new FitAddon.FitAddon();
   term.loadAddon(fitAddon);
@@ -1478,6 +1477,8 @@ function createTaskTerminal(taskId, taskTitle = '', token = null) {
 
   selectTerminal(id);
   renderTerminalTabs();
+  // Extra delayed fit to handle cases where console was just uncollapsed
+  setTimeout(() => { try { fitAddon.fit(); } catch (_) {} }, 200);
   return entry;
 }
 
@@ -1506,6 +1507,11 @@ function createStreamTerminal(taskId, taskTitle = '') {
   pane.id = `term-pane-${id}`;
   $id('terminal-container').appendChild(pane);
 
+  // Force synchronous reflow so the container has correct dimensions before xterm.js
+  // measures character size (xterm caches charWidth at open() time; if the container
+  // was display:none it would cache 0 and fitAddon.fit() would never fix it).
+  void $id('terminal-container').offsetWidth;
+
   const term = new Terminal(TERM_OPTS);
   const fitAddon = new FitAddon.FitAddon();
   term.loadAddon(fitAddon);
@@ -1516,6 +1522,8 @@ function createStreamTerminal(taskId, taskTitle = '') {
 
   selectTerminal(id);
   renderTerminalTabs();
+  // Extra delayed fit to handle cases where console was just uncollapsed
+  setTimeout(() => { try { fitAddon.fit(); } catch (_) {} }, 200);
   return entry;
 }
 
@@ -1573,9 +1581,12 @@ function _updateStatus(cls) {
 
 function _connectTerminalWs(id, term, fitAddon, token = null) {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const cols = term.cols || 220;
+  const rows = term.rows || 50;
+  const sizeParams = `cols=${cols}&rows=${rows}`;
   const url = token
-    ? `${proto}://${location.host}/ws/terminal?token=${encodeURIComponent(token)}`
-    : `${proto}://${location.host}/ws/terminal`;
+    ? `${proto}://${location.host}/ws/terminal?token=${encodeURIComponent(token)}&${sizeParams}`
+    : `${proto}://${location.host}/ws/terminal?${sizeParams}`;
   const ws = new WebSocket(url);
   ws.binaryType = 'arraybuffer';
 
@@ -1587,7 +1598,10 @@ function _connectTerminalWs(id, term, fitAddon, token = null) {
   ws.onopen = () => {
     if (id === state.activeTerminalId) _updateStatus('connected');
     try { fitAddon.fit(); } catch (_) {}
-    // fitAddon.fit() triggers term.onResize which sends the size below
+    // Always send current size explicitly — fitAddon.fit() only triggers term.onResize
+    // when the size actually changes; if the terminal was already fitted before the WS
+    // opened, onResize won't fire and the server PTY would stay at its default 80×24.
+    sendResize(term.cols, term.rows);
   };
   ws.onmessage = (evt) => {
     const data = evt.data instanceof ArrayBuffer ? new Uint8Array(evt.data) : evt.data;
@@ -1629,6 +1643,7 @@ function setupEventListeners() {
 
   // Modal create
   $id('modal-create').addEventListener('click', () => createPlan(true));
+  $id('modal-create-phases').addEventListener('click', () => createPlan('phases'));
   $id('modal-create-only').addEventListener('click', () => createPlan(false));
   $id('modal-plan-name').addEventListener('keydown', (e) => {
     if (e.key === 'Escape') closeModal();
@@ -1707,6 +1722,15 @@ function setupEventListeners() {
 
   // Theme
   _initThemeListeners();
+
+  // Settings
+  $id('btn-settings').addEventListener('click', openSettingsModal);
+  $id('settings-close').addEventListener('click', closeSettingsModal);
+  $id('settings-cancel').addEventListener('click', closeSettingsModal);
+  $id('modal-settings-overlay').addEventListener('click', (e) => {
+    if (e.target === $id('modal-settings-overlay')) closeSettingsModal();
+  });
+  $id('settings-save').addEventListener('click', saveSettings);
 }
 
 function selectTrackType(type) {
@@ -1767,7 +1791,9 @@ async function createPlan(withGenerate = false) {
 
     if (hasSpec) _switchTab('spec');
 
-    if (withGenerate) {
+    if (withGenerate === 'phases') {
+      generatePhases(plan.id);
+    } else if (withGenerate) {
       if (hasSpec) refineAndGenerate(plan.id);
       else generateTasks(plan.id);
     }
@@ -1790,7 +1816,9 @@ async function createPlan(withGenerate = false) {
     state.selectedPlanId = plan.id;
     await refresh();
 
-    if (withGenerate && description) {
+    if (withGenerate === 'phases') {
+      generatePhases(plan.id);
+    } else if (withGenerate && description) {
       await generateTasksFromTemplate(plan.id, trackType, description, subtypes);
     }
   }
@@ -2200,21 +2228,24 @@ let _themeProjectKey = 'arche-theme-default';
 
 function _themeKey() { return _themeProjectKey; }
 
-function applyTheme(themeId) {
+// Apply theme visually (CSS + xterm + modal indicator) without persisting.
+function _applyThemeCss(themeId) {
   const theme = THEMES[themeId] || THEMES.dark;
   const root = document.documentElement;
   Object.entries(theme.css).forEach(([k, v]) => root.style.setProperty(k, v));
-  // Update xterm theme
   Object.assign(TERM_OPTS.theme, theme.term);
   state.terminals.forEach(({ term }) => {
     try { term.options.theme = { ...theme.term }; } catch (_) {}
   });
-  // Update active indicator in modal
   document.querySelectorAll('.theme-option').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.themeId === themeId);
   });
+}
+
+// Apply theme and persist (localStorage + server). Called only on explicit user choice.
+function applyTheme(themeId) {
+  _applyThemeCss(themeId);
   localStorage.setItem(_themeKey(), themeId);
-  // Persist on server so theme survives browser cache clears
   apiFetch('/api/settings/theme', { method: 'POST', body: JSON.stringify({ theme: themeId }) }).catch(() => {});
 }
 
@@ -2239,12 +2270,35 @@ function closeThemeModal() {
   $id('modal-theme-overlay').classList.add('hidden');
 }
 
+// ── Settings modal ───────────────────────────────────────────────────────────
+async function openSettingsModal() {
+  try {
+    const data = await apiFetch('/api/settings/protected-paths');
+    $id('settings-protected-paths').value = (data.protected_paths || []).join('\n');
+  } catch (_) {}
+  $id('modal-settings-overlay').classList.remove('hidden');
+}
+
+function closeSettingsModal() {
+  $id('modal-settings-overlay').classList.add('hidden');
+}
+
+async function saveSettings() {
+  const raw = $id('settings-protected-paths').value;
+  const paths = raw.split('\n').map(l => l.trim()).filter(Boolean);
+  await apiFetch('/api/settings/protected-paths', {
+    method: 'POST',
+    body: JSON.stringify({ protected_paths: paths }),
+  });
+  closeSettingsModal();
+}
+
 function _initThemeListeners() {
   _buildThemeModal();
-  // Apply a quick default; setupTheme() will refine once project name is known
+  // Apply a quick visual default without saving — the authoritative theme comes from the server in init().
   const earlyKey = Object.keys(localStorage).find(k => k.startsWith('arche-theme-'));
   const earlyTheme = earlyKey ? localStorage.getItem(earlyKey) : null;
-  applyTheme(earlyTheme && THEMES[earlyTheme] ? earlyTheme : 'dark');
+  _applyThemeCss(earlyTheme && THEMES[earlyTheme] ? earlyTheme : 'dark');
 
   $id('btn-theme').addEventListener('click', openThemeModal);
   $id('theme-close').addEventListener('click', closeThemeModal);
@@ -2256,7 +2310,7 @@ function _initThemeListeners() {
 function setupTheme(projectName) {
   _themeProjectKey = `arche-theme-${projectName || 'default'}`;
   const saved = localStorage.getItem(_themeKey());
-  if (saved && THEMES[saved]) applyTheme(saved);
+  if (saved && THEMES[saved]) _applyThemeCss(saved);
 }
 
 // ── Boot ───────────────────────────────────────────────────────────────────

@@ -211,6 +211,19 @@ def create_app() -> FastAPI:
     def get_project():
         return load_project()
 
+    @app.get("/api/settings/protected-paths")
+    def get_protected_paths():
+        project = load_project()
+        return {"protected_paths": project.get("protected_paths", [])}
+
+    @app.post("/api/settings/protected-paths")
+    def save_protected_paths(req: dict):
+        paths = req.get("protected_paths", [])
+        project = load_project()
+        project["protected_paths"] = [p.strip() for p in paths if p.strip()]
+        save_project(project)
+        return {"protected_paths": project["protected_paths"]}
+
     @app.get("/api/settings/theme")
     def get_theme():
         project = load_project()
@@ -1274,9 +1287,9 @@ def create_app() -> FastAPI:
     # ── WebSocket terminal ────────────────────────────────────────────────
 
     @app.websocket("/ws/terminal")
-    async def terminal_ws(websocket: WebSocket, token: str = None):
+    async def terminal_ws(websocket: WebSocket, token: str = None, cols: int = 220, rows: int = 50):
         init_cmd = _pending_terminal_inits.pop(token, None) if token else None
-        await terminal_manager.handle(websocket, init_cmd=init_cmd)
+        await terminal_manager.handle(websocket, init_cmd=init_cmd, cols=cols, rows=rows)
 
     # ── Static files / SPA ───────────────────────────────────────────────
 

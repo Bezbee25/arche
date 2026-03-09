@@ -9,7 +9,7 @@ from typing import Optional
 
 import yaml
 
-STORAGE_DIR = Path("storage")
+STORAGE_DIR = Path(".arche-storage")
 TRACKS_DIR = STORAGE_DIR / "tracks"
 PROJECT_FILE = STORAGE_DIR / "project.yaml"
 CURRENT_FILE = STORAGE_DIR / "current.yaml"

@@ -25,7 +25,7 @@ SKIP_DIRS = {
     "node_modules", "__pycache__", ".venv", "venv", "env", ".env",
     ".mypy_cache", ".ruff_cache", ".pytest_cache", ".tox",
     "dist", "build", ".next", ".nuxt", ".output", "target",
-    "storage", ".idea", ".vscode", ".DS_Store",
+    ".arche-storage", ".idea", ".vscode", ".DS_Store",
     "coverage", ".coverage", "htmlcov",
 }
 

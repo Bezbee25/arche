@@ -813,6 +813,19 @@ body {
 
 .btn-primary:hover { background: #4dd9e4; }
 
+.btn-blue {
+  background: var(--blue);
+  border: none;
+  color: #000;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 4px;
+}
+.btn-blue:hover { background: #79b8ff; }
+
 .btn-icon {
   background: none;
   border: none;
@@ -1226,7 +1239,16 @@ body {
 }
 .phase-progress-fill { height: 100%; background: var(--cyan); border-radius: 2px; }
 
-.phase-actions { display: flex; gap: 4px; }
+.phase-actions { display: flex; gap: 4px; align-items: center; }
+
+.phase-select-checkbox {
+  width: 15px;
+  height: 15px;
+  cursor: pointer;
+  accent-color: var(--cyan);
+  flex-shrink: 0;
+  margin-left: 4px;
+}
 
 .phase-tasks { padding: 6px 0; }
 .phase-tasks-locked { opacity: 0.5; pointer-events: none; }

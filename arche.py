@@ -105,8 +105,8 @@ def _show_help() -> None:
         "  [dim]1.[/dim]  Reads the [bold]current task[/bold] (title + description)\n"
         "  [dim]2.[/dim]  Assembles the [bold]full context[/bold]:\n"
         "       spec.md              ← track goal and requirements\n"
-        "       storage/archi.md     ← global blueprint (arche scan)\n"
-        "       storage/memory.md    ← cross-track discoveries (shared)\n"
+        "       .arche-storage/archi.md     ← global blueprint (arche scan)\n"
+        "       .arche-storage/memory.md    ← cross-track discoveries (shared)\n"
         "       tracks/{id}/archi.md ← track-specific architecture notes\n"
         "       done tasks           ← what has already been completed\n"
         "       session log          ← notes from the current session\n"
@@ -172,7 +172,7 @@ def _show_help() -> None:
 
     section("Setup", "cyan", [
         ("arche init",                    "Configure project + choose LLM models per phase"),
-        ("arche scan",                    "Scan source files → storage/archi.md (optional, re-runnable)"),
+        ("arche scan",                    "Scan source files → .arche-storage/archi.md (optional, re-runnable)"),
         ("arche web  [--port 7331]",      "Web UI with embedded terminal"),
         ("arche help",                    "Show this guide"),
     ])
@@ -222,7 +222,7 @@ def _show_help() -> None:
     c.print(Rule("Files managed automatically", style="dim"))
     c.print()
     c.print(
-        "  [dim]storage/[/dim]\n"
+        "  [dim].arche-storage/[/dim]\n"
         "  [dim]├──[/dim] [bold]project.yaml[/bold]   [dim]← project name, stack, model config[/dim]\n"
         "  [dim]├──[/dim] [bold cyan]archi.md[/bold cyan]       [dim]← global blueprint (arche scan, static)[/dim]\n"
         "  [dim]├──[/dim] [bold green]memory.md[/bold green]      [dim]← cross-track discoveries (auto-updated)[/dim]\n"
@@ -236,7 +236,7 @@ def _show_help() -> None:
     c.print()
     c.print(
         "  Every [bold]arche task run[/bold][dim] instructs the LLM to document its decisions.[/dim]\n"
-        "  [dim]Notes go to both [/dim][bold cyan]tracks/{id}/archi.md[/bold cyan][dim] and [/dim][bold green]storage/memory.md[/bold green][dim].\n"
+        "  [dim]Notes go to both [/dim][bold cyan]tracks/{id}/archi.md[/bold cyan][dim] and [/dim][bold green].arche-storage/memory.md[/bold green][dim].\n"
         "  Context grows richer with each task — across all tracks.[/dim]",
         highlight=False,
     )
@@ -357,7 +357,7 @@ def init() -> None:
 
 @app.command()
 def scan() -> None:
-    """Scan the project files and generate storage/archi.md via LLM (review model)."""
+    """Scan the project files and generate .arche-storage/archi.md via LLM (review model)."""
     _require_project()
     from core.scanner import run_scan
     run_scan()
