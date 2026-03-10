@@ -30,6 +30,7 @@ const state = {
   newPhasePlanId: null,
   addTaskTrackId: null,
   newTrackType: 'feature',
+  collapsedPhases: new Set(), // phase IDs that are collapsed
   _userScrolling: null,     // id of tab where user is scrolling ('spec' | 'tasks' | 'output')
   _autoRefreshBlocked: false, // true if user is scrolling in any section
 };
@@ -235,13 +236,16 @@ function renderPlanHeader(plan) {
   const pct = total > 0 ? Math.round(done / total * 100) : 0;
 
   $id('plan-header').innerHTML = `
-    <div class="plan-header-title">${escHtml(plan.name || plan.id)}</div>
+    <div class="plan-header-row1">
+      <div class="plan-header-title">${escHtml(plan.name || plan.id)}</div>
+      <div id="plan-header-actions"></div>
+    </div>
     <div class="plan-header-meta">
       <span class="badge badge-${status}">${plan.status || ''}</span>
       <span class="phase-tag phase-${phase}">${phase.toUpperCase()}</span>
       <span>${done}/${total} tasks</span>
-      <span style="flex:1;max-width:160px">
-        <div class="plan-progress-bar" style="margin:0">
+      <span style="display:flex;align-items:center">
+        <div class="plan-progress-bar" style="margin:0;width:80px">
           <div class="plan-progress-fill" style="width:${pct}%"></div>
         </div>
       </span>
@@ -346,7 +350,7 @@ function renderTasks(plan) {
 
   // Filter buttons
   const filters = [
-    ['all', 'Toutes', stats.total || 0],
+    ['all', 'All', stats.total || 0],
     ['TODO', 'Todo', stats.TODO || 0],
     ['IN_PROGRESS', 'In progress', stats.IN_PROGRESS || 0],
     ['DONE', 'Done', stats.DONE || 0],
@@ -373,35 +377,33 @@ function renderTasks(plan) {
     ? `Execute ${bulkCount} selected task${bulkCount > 1 ? 's' : ''} in sequence`
     : isActive ? 'Run selected task' : 'Only available on active track';
 
-  const actionBar = `
-    <div class="task-action-bar">
-      <div class="action-buttons">
+  const _savedAutoDone = $id('action-auto-done')?.checked ?? true;
+  const _savedScroll = pane.querySelector('.tasks-scroll')?.scrollTop || 0;
+  const headerActions = $id('plan-header-actions');
+  if (headerActions) headerActions.innerHTML = '';
+  pane.innerHTML = `
+    <div class="tasks-toolbar-wrap">
+      <div class="tasks-toolbar">
+        <div class="filter-bar">${filterBar}</div>
+      </div>
+      <div class="tasks-actions-row">
         <button class="task-action-btn btn-add" title="Add task" onclick="openAddTaskModal('${planId}')">+ Add task</button>
         <button class="task-action-btn btn-edit" title="Edit"${dis} onclick="uiEditTask()">✎ Edit</button>
         <button class="task-action-btn btn-run" title="${runTitle}"${disLlm} onclick="uiRunTask()">${runLabel}</button>
         <button class="task-action-btn btn-review" title="${isActive ? 'Review' : 'Only available on active track'}"${disLlm} onclick="uiReviewTask()">⊙ Review</button>
-      </div>
-      <div class="secondary-controls">
         <label class="auto-done-label" title="Mark task as done when run completes">
           <input type="checkbox" id="action-auto-done" checked>
           Auto-done
         </label>
         ${selectAllBtn}
       </div>
-    </div>`;
-
-  const _savedScroll = pane.querySelector('.tasks-scroll')?.scrollTop || 0;
-  pane.innerHTML = `
-    <div class="tasks-toolbar-wrap">
-      <div class="tasks-toolbar">
-        <div class="filter-bar">${filterBar}</div>
-        ${actionBar}
-      </div>
     </div>
     <div class="tasks-scroll">
       <div class="tasks-list">${taskRows || '<div class="empty-state" style="padding:20px 0">No tasks match this filter.</div>'}</div>
     </div>`;
   if (_savedScroll) pane.querySelector('.tasks-scroll').scrollTop = _savedScroll;
+  const autoDoneEl = $id('action-auto-done');
+  if (autoDoneEl) autoDoneEl.checked = _savedAutoDone;
 
   // Filter buttons
   pane.querySelectorAll('.filter-btn').forEach(btn => {
@@ -507,23 +509,32 @@ function renderTasksWithPhases(plan, phases) {
     ? `Execute ${bulkCount} selected task${bulkCount > 1 ? 's' : ''} in sequence`
     : isActive ? 'Run selected task' : 'Only available on active track';
 
-  const actionBar = `
-    <div class="task-action-bar">
-      <div class="action-buttons">
-        <button class="task-action-btn btn-add" title="Add phase" onclick="openNewPhaseModal('${planId}')">+ Add Phase</button>
-        <button class="task-action-btn btn-add" title="Add task" onclick="openAddTaskModal('${planId}')">+ Add task</button>
-        <button class="task-action-btn btn-edit" title="Edit"${dis} onclick="uiEditTask()">✎ Edit</button>
-        <button class="task-action-btn btn-run" title="${runTitle}"${disLlm} onclick="uiRunTask()">${runLabel}</button>
-        <button class="task-action-btn btn-review" title="${isActive ? 'Review' : 'Only available on active track'}"${disLlm} onclick="uiReviewTask()">⊙ Review</button>
-      </div>
-      <div class="secondary-controls">
-        <label class="auto-done-label" title="Mark task as done when run completes">
-          <input type="checkbox" id="action-auto-done" checked>
-          Auto-done
-        </label>
-        ${selectAllBtn}
-      </div>
-    </div>`;
+  const actionsRow = `
+    <button class="task-action-btn btn-add" title="Add phase" onclick="openNewPhaseModal('${planId}')">+ Add Phase</button>
+    <button class="task-action-btn btn-add" title="Add task" onclick="openAddTaskModal('${planId}')">+ Add task</button>
+    <button class="task-action-btn btn-edit" title="Edit"${dis} onclick="uiEditTask()">✎ Edit</button>
+    <button class="task-action-btn btn-run" title="${runTitle}"${disLlm} onclick="uiRunTask()">${runLabel}</button>
+    <button class="task-action-btn btn-review" title="${isActive ? 'Review' : 'Only available on active track'}"${disLlm} onclick="uiReviewTask()">⊙ Review</button>
+    <label class="auto-done-label" title="Mark task as done when run completes">
+      <input type="checkbox" id="action-auto-done" checked>
+      Auto-done
+    </label>
+    ${selectAllBtn}`;
+
+  // Compute global stats across all phases for the filter bar
+  const allTasks = phases.flatMap(ph => ph.tasks || []);
+  const globalStats = { total: allTasks.length, TODO: 0, IN_PROGRESS: 0, DONE: 0 };
+  allTasks.forEach(t => { const s = t.status || 'TODO'; if (s in globalStats) globalStats[s]++; });
+
+  const phaseFilters = [
+    ['all', 'All', globalStats.total],
+    ['TODO', 'Todo', globalStats.TODO],
+    ['IN_PROGRESS', 'In progress', globalStats.IN_PROGRESS],
+    ['DONE', 'Done', globalStats.DONE],
+  ];
+  const filterBar = phaseFilters.map(([val, label, count]) =>
+    `<button class="filter-btn ${state.taskFilter === val ? 'active' : ''}" data-filter="${val}">${label} <span class="filter-count">${count}</span></button>`
+  ).join('');
 
   const phaseSections = phases.map(ph => {
     const phStatus = ph.status || 'TODO';
@@ -540,7 +551,11 @@ function renderTasksWithPhases(plan, phases) {
       return dep ? dep.name : depId;
     }).join(', ');
 
-    const taskRows = phaseTasks.map(t => {
+    const filteredTasks = state.taskFilter === 'all'
+      ? phaseTasks
+      : phaseTasks.filter(t => (t.status || 'TODO') === state.taskFilter);
+
+    const taskRows = filteredTasks.map(t => {
       const status = t.status || 'TODO';
       const icon = TASK_ICONS[status] || '·';
       const isUiSelected = t.id === uiSel;
@@ -581,7 +596,9 @@ function renderTasksWithPhases(plan, phases) {
 
     const emptyState = phaseTasks.length === 0
       ? `<div class="phase-empty">No tasks yet. <button class="btn-ghost btn-sm" onclick="generateTasksForPhase('${planId}','${ph.id}')">⚡ Generate</button></div>`
-      : '';
+      : filteredTasks.length === 0
+        ? `<div class="phase-empty" style="color:var(--text-dim)">No ${state.taskFilter} tasks.</div>`
+        : '';
 
     // Per-phase checkbox: select/deselect all TODO tasks in this phase
     const phaseTodoTasks = phaseTasks.filter(t => (t.status || 'TODO') === 'TODO');
@@ -592,9 +609,13 @@ function renderTasksWithPhases(plan, phases) {
              title="Select all TODO tasks in this phase" ${phaseAllSelected ? 'checked' : ''}>`
       : '';
 
+    const isCollapsed = state.collapsedPhases.has(ph.id);
+    const chevron = `<span class="phase-chevron">${isCollapsed ? '▸' : '▾'}</span>`;
+
     return `
-      <div class="phase-section ${isLocked ? 'phase-locked' : ''}" data-phase-id="${ph.id}">
-        <div class="phase-header">
+      <div class="phase-section ${isLocked ? 'phase-locked' : ''}${isCollapsed ? ' phase-collapsed' : ''}" data-phase-id="${ph.id}">
+        <div class="phase-header" onclick="togglePhase('${ph.id}')">
+          ${chevron}
           <span class="phase-lock-icon">${lockIcon}</span>
           <span class="phase-name">${escHtml(ph.name)}</span>
           <span class="phase-badge phase-badge-${phStatus.toLowerCase()}">${phStatus}</span>
@@ -603,7 +624,7 @@ function renderTasksWithPhases(plan, phases) {
             <span class="phase-task-count">${phDone}/${phTotal}</span>
             <div class="phase-progress-bar"><div class="phase-progress-fill" style="width:${pct}%"></div></div>
           </span>
-          <span class="phase-actions">
+          <span class="phase-actions" onclick="event.stopPropagation()">
             ${!isLocked && phaseTasks.length === 0 ? `<button class="btn-ghost btn-sm" onclick="generateTasksForPhase('${planId}','${ph.id}')">⚡ Tasks</button>` : ''}
             <button class="btn-ghost btn-sm btn-danger-ghost" title="Delete phase and all its tasks" onclick="uiDeletePhase('${planId}','${ph.id}','${escHtml(ph.name)}')">✕</button>
             ${phaseCheckbox}
@@ -616,16 +637,29 @@ function renderTasksWithPhases(plan, phases) {
       </div>`;
   }).join('');
 
-  const toolbar = `
+  const _savedAutoDone = $id('action-auto-done')?.checked ?? true;
+  const _savedScroll = pane.querySelector('.tasks-scroll')?.scrollTop || 0;
+  const headerActions = $id('plan-header-actions');
+  if (headerActions) headerActions.innerHTML = '';
+  pane.innerHTML = `
     <div class="tasks-toolbar-wrap">
       <div class="tasks-toolbar">
-        ${actionBar}
+        <div class="filter-bar">${filterBar}</div>
       </div>
-    </div>`;
-
-  const _savedScroll = pane.querySelector('.tasks-scroll')?.scrollTop || 0;
-  pane.innerHTML = toolbar + `<div class="tasks-scroll"><div class="phase-list">${phaseSections}</div></div>`;
+      <div class="tasks-actions-row">${actionsRow}</div>
+    </div>
+    <div class="tasks-scroll"><div class="phase-list">${phaseSections}</div></div>`;
   if (_savedScroll) pane.querySelector('.tasks-scroll').scrollTop = _savedScroll;
+  const autoDoneEl = $id('action-auto-done');
+  if (autoDoneEl) autoDoneEl.checked = _savedAutoDone;
+
+  // Filter button binding
+  pane.querySelectorAll('.filter-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.taskFilter = btn.dataset.filter;
+      renderTasksWithPhases(plan, phases);
+    });
+  });
 
   // Bind task clicks (toggle UI selection when clicking on row body, not checkbox)
   pane.querySelectorAll('.task-item:not(.task-locked)').forEach(row => {
@@ -742,6 +776,16 @@ async function uiDeletePhase(planId, phaseId, phaseName) {
   await renderPanelFor(planId);
 }
 
+// ── Phase collapse toggle ─────────────────────────────────────────────────────
+function togglePhase(phaseId) {
+  if (state.collapsedPhases.has(phaseId)) {
+    state.collapsedPhases.delete(phaseId);
+  } else {
+    state.collapsedPhases.add(phaseId);
+  }
+  if (state.selectedPlanId) renderPanelFor(state.selectedPlanId);
+}
+
 // ── New phase modal ──────────────────────────────────────────────────────────
 function openNewPhaseModal(planId) {
   state.newPhasePlanId = planId;
@@ -795,6 +839,7 @@ async function confirmNewPhase() {
 
 // ── Spec tab ───────────────────────────────────────────────────────────────
 async function renderSpec(planId) {
+  const el = $id('plan-header-actions'); if (el) el.innerHTML = '';
   const pane = $id('tab-spec');
   pane.innerHTML = '<div class="empty-state">Loading...</div>';
   const data = await api.getTrackSpec(planId);
@@ -813,6 +858,7 @@ async function renderSpec(planId) {
 
 // ── Sessions tab ───────────────────────────────────────────────────────────
 function renderSessions(plan) {
+  const el = $id('plan-header-actions'); if (el) el.innerHTML = '';
   const sessions = plan.sessions || [];
   const pane = $id('tab-sessions');
 
@@ -1691,15 +1737,26 @@ function setupEventListeners() {
   // Refresh button
   $id('btn-web-refresh').addEventListener('click', refresh);
 
-  // Archi button
-  $id('btn-archi').addEventListener('click', openArchiModal);
+  // Settings cog dropdown
+  $id('btn-settings-cog').addEventListener('click', (e) => {
+    e.stopPropagation();
+    $id('settings-dropdown').classList.toggle('hidden');
+  });
+  document.addEventListener('click', () => {
+    $id('settings-dropdown').classList.add('hidden');
+  });
+  $id('drop-archi').addEventListener('click', () => { $id('settings-dropdown').classList.add('hidden'); openArchiModal(); });
+  $id('drop-memory').addEventListener('click', () => { $id('settings-dropdown').classList.add('hidden'); openMemoryModal(); });
+  $id('drop-theme').addEventListener('click', () => { $id('settings-dropdown').classList.add('hidden'); openThemeModal(); });
+  $id('drop-project-settings').addEventListener('click', () => { $id('settings-dropdown').classList.add('hidden'); openSettingsModal(); });
+
+  // Archi modal
   $id('archi-close').addEventListener('click', closeArchiModal);
   $id('modal-archi-overlay').addEventListener('click', (e) => {
     if (e.target === $id('modal-archi-overlay')) closeArchiModal();
   });
 
-  // Memory button
-  $id('btn-memory').addEventListener('click', openMemoryModal);
+  // Memory modal
   $id('memory-close').addEventListener('click', closeMemoryModal);
   $id('memory-clear').addEventListener('click', clearMemory);
   $id('modal-memory-overlay').addEventListener('click', (e) => {
@@ -1726,8 +1783,7 @@ function setupEventListeners() {
   // Theme
   _initThemeListeners();
 
-  // Settings
-  $id('btn-settings').addEventListener('click', openSettingsModal);
+  // Settings modal close
   $id('settings-close').addEventListener('click', closeSettingsModal);
   $id('settings-cancel').addEventListener('click', closeSettingsModal);
   $id('modal-settings-overlay').addEventListener('click', (e) => {
@@ -2303,7 +2359,6 @@ function _initThemeListeners() {
   const earlyTheme = earlyKey ? localStorage.getItem(earlyKey) : null;
   _applyThemeCss(earlyTheme && THEMES[earlyTheme] ? earlyTheme : 'dark');
 
-  $id('btn-theme').addEventListener('click', openThemeModal);
   $id('theme-close').addEventListener('click', closeThemeModal);
   $id('modal-theme-overlay').addEventListener('click', (e) => {
     if (e.target === $id('modal-theme-overlay')) closeThemeModal();

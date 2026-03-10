@@ -102,6 +102,41 @@ body {
 .header-actions { margin-left: auto; display: flex; gap: 8px; align-items: center; }
 .header-actions .btn-ghost { font-size: 18px; padding: 4px 8px; }
 
+/* ── Settings cog dropdown ──────────────────────────── */
+.settings-menu-wrap { position: relative; }
+
+#btn-settings-cog { font-size: 16px; padding: 4px 8px; }
+
+.settings-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+  min-width: 140px;
+  z-index: 200;
+  padding: 4px 0;
+}
+
+.settings-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 14px;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+}
+.settings-dropdown-item:hover { background: var(--bg3); }
+
 /* ── App layout ─────────────────────────────────────── */
 #app {
   display: flex;
@@ -208,25 +243,41 @@ body {
 }
 
 #plan-header {
-  padding: 16px 20px 0;
+  padding: 10px 20px 0;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
 
+.plan-header-row1 {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
 .plan-header-title {
-  font-size: 17px;
+  font-size: 16px;
   font-weight: 700;
   color: var(--text);
-  margin-bottom: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 
 .plan-header-meta {
   font-size: 12px;
   color: var(--text-muted);
   display: flex;
-  gap: 16px;
+  gap: 10px;
   align-items: center;
-  padding-bottom: 12px;
+  padding-bottom: 8px;
+}
+
+#plan-header-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
 }
 
 .phase-tag {
@@ -315,25 +366,18 @@ body {
 .filter-btn.active { background: var(--bg); border-color: var(--cyan); color: var(--cyan); }
 .filter-count { color: var(--text-dim); font-size: 11px; }
 
-.task-action-bar {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-left: auto;
-  flex-shrink: 0;
-}
-
 .action-buttons {
   display: flex;
   gap: 6px;
   align-items: center;
 }
 
-.selection-controls, .secondary-controls {
+.tasks-actions-row {
   display: flex;
   gap: 6px;
   align-items: center;
-  justify-content: flex-end;
+  padding: 4px 0 6px;
+  flex-wrap: wrap;
 }
 
 .task-action-btn {
@@ -1194,6 +1238,9 @@ body {
 
 .phase-section.phase-locked { opacity: 0.7; }
 
+.phase-section.phase-collapsed .phase-tasks,
+.phase-section.phase-collapsed .phase-description { display: none; }
+
 .phase-header {
   display: flex;
   align-items: center;
@@ -1201,7 +1248,12 @@ body {
   padding: 8px 12px;
   background: var(--bg3);
   flex-wrap: wrap;
+  cursor: pointer;
+  user-select: none;
 }
+.phase-header:hover { filter: brightness(1.15); }
+
+.phase-chevron { font-size: 11px; color: var(--text-muted); flex-shrink: 0; width: 10px; }
 
 .phase-lock-icon { font-size: 13px; flex-shrink: 0; }
 .phase-name { font-weight: 600; font-size: 13px; flex-shrink: 0; }

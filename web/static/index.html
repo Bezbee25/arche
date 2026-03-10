@@ -42,12 +42,17 @@
       <span id="project-name" class="project-name">loading...</span>
       <span class="header-actions">
         <button id="btn-new-plan" class="btn-sm">+ New track</button>
-        <button id="btn-archi" class="btn-ghost btn-sm" title="Architecture blueprint"><span class="btn-icon">⊞</span> Archi</button>
-        <button id="btn-memory" class="btn-ghost btn-sm" title="Shared memory"><span class="btn-icon">⊕</span> Memory</button>
         <button id="btn-web-refresh" class="btn-sm btn-ghost" title="Refresh">↻</button>
         <button id="btn-docs" class="btn-sm btn-ghost" title="Documentation">❓</button>
-        <button id="btn-theme" class="btn-ghost btn-sm" title="Change theme">◑ Theme</button>
-        <button id="btn-settings" class="btn-ghost btn-sm" title="Project settings">⚙ Settings</button>
+        <div class="settings-menu-wrap">
+          <button id="btn-settings-cog" class="btn-ghost btn-sm" title="Settings">⚙</button>
+          <div id="settings-dropdown" class="settings-dropdown hidden">
+            <button class="settings-dropdown-item" id="drop-archi"><span class="btn-icon">⊞</span> Archi</button>
+            <button class="settings-dropdown-item" id="drop-memory"><span class="btn-icon">⊕</span> Memory</button>
+            <button class="settings-dropdown-item" id="drop-theme">◑ Theme</button>
+            <button class="settings-dropdown-item" id="drop-project-settings">⚙ Settings</button>
+          </div>
+        </div>
       </span>
     </header>
 
@@ -242,7 +247,7 @@
       <div class="modal-actions">
         <button id="modal-cancel" class="btn-ghost">Cancel</button>
         <button id="modal-create-only" class="btn-ghost btn-sm">Create only</button>
-        <button id="modal-create-phases" class="btn-ghost btn-sm">Create &amp; Phase ✦</button>
+        <button id="modal-create-phases" class="btn-primary">Create &amp; Phase ✦</button>
         <button id="modal-create" class="btn-primary">Create &amp; Tasks ✦</button>
       </div>
     </div>

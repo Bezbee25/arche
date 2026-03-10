@@ -100,10 +100,12 @@ def generate_tasks_from_template(
     else:
         # task type
         tasks = [
-            {"title": f"Implement: {name}", "description": description},
+            {"title": f"Analyze: {name}", "description": f"Break down requirements and plan the approach for: {description}"},
+            {"title": f"Implement: {name}", "description": f"Implement the solution based on the analysis. Context: {description}"},
+            {"title": f"Verify: {name}", "description": f"Test and validate the implementation works correctly. Context: {description}"},
         ]
         if "test" in subtypes:
-            tasks.append({"title": "Write tests", "description": f"Write tests covering the implementation of: {description}"})
+            tasks.append({"title": "Write tests", "description": f"Write automated tests covering the implementation of: {description}"})
         if "doc" in subtypes:
             tasks.append({"title": "Update documentation", "description": f"Update docs/README to reflect changes for: {description}"})
 

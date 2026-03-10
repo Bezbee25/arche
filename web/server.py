@@ -1056,9 +1056,10 @@ def create_app() -> FastAPI:
                     if notes:
                         append_archi(track_id, notes)
 
-                    # Auto-done
+                    # Auto-done — save archi notes as task notes so next task sees findings
                     if req.auto_done:
-                        complete_task(track_id, task_id, f"Auto-completed (bulk execution, task {task_num}/{len(valid_task_ids)})")
+                        task_notes = notes[:600].strip() if notes else ""
+                        complete_task(track_id, task_id, task_notes)
 
                     yield f"data: __TASK_DONE__\n\n"
 

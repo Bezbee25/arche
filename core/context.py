@@ -94,9 +94,19 @@ def build_task_prompt(track_id: str, track_meta: dict, comment: str = "") -> str
         parts.append(f"## Notes d'architecture du track\n\n{archi}")
 
     if done_tasks:
-        done_list = "\n".join(f"  ✓ {t['title']}" + (f" — {t['notes']}" if t.get("notes") else "")
-                              for t in done_tasks)
-        parts.append(f"## Tâches déjà complétées\n\n{done_list}")
+        done_parts = []
+        for t in done_tasks:
+            entry = f"✓ **{t['title']}**"
+            if t.get("notes"):
+                entry += f"\n   Findings: {t['notes']}"
+            done_parts.append(entry)
+        done_list = "\n\n".join(done_parts)
+        parts.append(
+            f"## Tâches déjà complétées\n\n"
+            f"⚠ Ces tâches sont TERMINÉES. Leurs findings sont listés ci-dessous — "
+            f"ne les répète pas, utilise directement ces résultats.\n\n"
+            f"{done_list}"
+        )
 
     if current:
         task_block = f"**{current['title']}**"
@@ -119,9 +129,14 @@ def build_task_prompt(track_id: str, track_meta: dict, comment: str = "") -> str
     parts.append(
         "---\n"
         "Exécute la tâche courante. Sois concret et actionnable.\n\n"
+        "**IMPORTANT** : Si des tâches précédentes ont déjà effectué une analyse ou un audit, "
+        "leurs résultats sont dans les sections 'Tâches déjà complétées' et 'Notes d'architecture du track'. "
+        "Utilise ces informations directement — ne refais pas une analyse déjà faite.\n\n"
         "À la fin de ta réponse, ajoute impérativement une section :\n\n"
         "## Notes d'architecture\n"
-        "*(décisions prises, patterns importants, découvertes, points d'attention pour les tâches suivantes)*\n"
+        "*(Pour les tâches d'analyse/audit : résume tous les findings clés, localisations précises, bugs trouvés.*\n"
+        "*Pour les tâches d'implémentation : décisions prises, patterns, changements effectués.*\n"
+        "*Toujours inclure les infos utiles pour les tâches suivantes.)*\n"
         "Si rien à noter, écris : `(aucune note)`"
     )
 

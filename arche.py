@@ -844,8 +844,9 @@ def task_switch(
 
             slog(track_id, f"Bulk task {i} done: **{task['title']}**\n\nOutput:\n{output[:400]}…", "BULK_RUN")
 
-            # Auto-mark as done
-            complete_task(track_id, task["id"], "Auto-completed (bulk execution)")
+            # Auto-mark as done — save archi notes as task notes so next task sees findings
+            task_notes = archi_notes[:600].strip() if archi_notes else ""
+            complete_task(track_id, task["id"], task_notes)
             log_task_done(track_id, task["title"])
             console.print(f"[green]✓ Done.[/green]")
 
