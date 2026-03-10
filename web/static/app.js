@@ -336,10 +336,10 @@ function renderTasks(plan) {
         </div>
         ${inlineType}
         ${inlineStatus}
-        <div class="task-checkbox-wrapper">
+        ${status !== 'DONE' ? `<div class="task-checkbox-wrapper">
           ${bulkNumber}
           <input type="checkbox" class="task-checkbox" data-task-id="${t.id}" ${isBulkSelected ? 'checked' : ''}>
-        </div>
+        </div>` : ''}
         <button class="task-delete-btn btn-danger-ghost" title="Delete task" onclick="event.stopPropagation();uiDeleteTask('${planId}','${t.id}','${escHtml(t.title||'')}')">✕</button>
       </div>`;
   }).join('');
@@ -359,7 +359,8 @@ function renderTasks(plan) {
   const isActive = plan.status === 'ACTIVE';
   const noSel = !uiSel;
   const dis = (noSel || !isActive) ? ' disabled' : '';
-  const disLlm = (!isActive) ? ' disabled' : dis;
+  const bulkCount = state.bulkSelectedTaskIds.length;
+  const disLlm = (!isActive) ? ' disabled' : (bulkCount > 0 ? '' : dis);
 
   // Select all / deselect all button
   const selectAllBtn = hasBulkSelection
@@ -367,7 +368,6 @@ function renderTasks(plan) {
     : `<button class="task-action-btn btn-select-all" onclick="selectAllTasks('${planId}')">☑ Select All</button>`;
 
   // Run button label shows "Run N" for bulk or "Run" for single
-  const bulkCount = state.bulkSelectedTaskIds.length;
   const runLabel = bulkCount > 0 ? `⇒ Run ${bulkCount}` : '▶ Run';
   const runTitle = bulkCount > 0
     ? `Execute ${bulkCount} selected task${bulkCount > 1 ? 's' : ''} in sequence`
@@ -492,8 +492,9 @@ function renderTasksWithPhases(plan, phases) {
   const noSel = !uiSel;
   const uiDone = uiTask && uiTask.status === 'DONE';
   const dis = (noSel || !isActive) ? ' disabled' : '';
-  const disLlm = (!isActive) ? ' disabled' : dis;
   const hasBulkSelection = state.bulkSelectedTaskIds.length > 0;
+  const bulkCount = state.bulkSelectedTaskIds.length;
+  const disLlm = (!isActive) ? ' disabled' : (bulkCount > 0 ? '' : dis);
 
   // Select all / deselect all button
   const selectAllBtn = hasBulkSelection
@@ -501,7 +502,6 @@ function renderTasksWithPhases(plan, phases) {
     : `<button class="task-action-btn btn-select-all" onclick="selectAllTasks('${planId}')">☑ Select All</button>`;
 
   // Run button label shows "Run N" for bulk or "Run" for single
-  const bulkCount = state.bulkSelectedTaskIds.length;
   const runLabel = bulkCount > 0 ? `⇒ Run ${bulkCount}` : '▶ Run';
   const runTitle = bulkCount > 0
     ? `Execute ${bulkCount} selected task${bulkCount > 1 ? 's' : ''} in sequence`
@@ -571,10 +571,10 @@ function renderTasksWithPhases(plan, phases) {
           </div>
           ${inlineType}
           ${inlineStatus}
-          <div class="task-checkbox-wrapper">
+          ${status !== 'DONE' ? `<div class="task-checkbox-wrapper">
             ${bulkNumber}
             <input type="checkbox" class="task-checkbox" data-task-id="${t.id}" ${isBulkSelected ? 'checked' : ''} ${isLocked ? 'disabled' : ''}>
-          </div>
+          </div>` : ''}
           <button class="task-delete-btn btn-danger-ghost" title="Delete task" onclick="event.stopPropagation();uiDeleteTask('${planId}','${t.id}','${escHtml(t.title||'')}')">✕</button>
         </div>`;
     }).join('');
@@ -1209,15 +1209,19 @@ function runBulkTasks(trackId, taskIds, comment = '', autoDone = true) {
           const lines = buffer.split('\n\n');
           buffer = lines.pop() || '';
 
-          for (const line of lines) {
-            if (!line.trim()) continue;
-            if (line.startsWith('data: ')) {
-              const data = line.slice(6);
+          for (const block of lines) {
+            if (!block.trim()) continue;
+            // Reassemble multi-line SSE block: each line may start with "data: "
+            const dataLines = block.split('\n')
+              .filter(l => l.startsWith('data: ') || l === 'data:')
+              .map(l => l.startsWith('data: ') ? l.slice(6) : '');
+            if (dataLines.length === 0) continue;
+            const data = dataLines.join('\n');
 
               if (data.startsWith('__BULK_DONE__')) {
                 state.outputRunning = false;
                 state._outputDone = true;
-                bulkTerminal.term.write('\n✓ Bulk execution complete\n');
+                bulkTerminal.term.write('\r\n✓ Bulk execution complete\r\n');
                 refresh();
                 return;
               }
@@ -1226,20 +1230,19 @@ function runBulkTasks(trackId, taskIds, comment = '', autoDone = true) {
                 const taskInfo = data.slice(14).trim();
                 const match = taskInfo.match(/^(\d+)\/\d+\s+(.*)$/);
                 if (match) {
-                  bulkTerminal.term.write(`\n━━ ${match[1]}. ${match[2]} ━━\n\n`);
+                  bulkTerminal.term.write(`\r\n━━ ${match[1]}. ${match[2]} ━━\r\n\r\n`);
                 }
                 continue;
               }
 
               if (data.startsWith('__TASK_DONE__')) {
-                bulkTerminal.term.write('\n✓ Task complete\n\n');
+                bulkTerminal.term.write('\r\n✓ Task complete\r\n\r\n');
                 continue;
               }
 
-              const chunk = stripAnsi(data);
+              const chunk = stripAnsi(data).replace(/\r?\n/g, '\r\n');
               state.outputText += chunk;
               bulkTerminal.term.write(chunk);
-            }
           }
         }
       } catch (err) {

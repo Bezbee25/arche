@@ -898,7 +898,7 @@ def create_app() -> FastAPI:
         """
         from core.context import build_task_prompt
         from core.router import (
-            _build_interactive_command,
+            _build_command,
             _get_cli_for_model,
             get_model_for_phase,
             get_tools_for_phase,
@@ -925,7 +925,7 @@ def create_app() -> FastAPI:
                 raise HTTPException(status_code=500, detail=f"CLI '{cli}' not found")
 
         tools = get_tools_for_phase(phase, plan)
-        cmd = _build_interactive_command(cli, model, None, tools)
+        cmd = _build_command(cli, model, None, tools)
         prompt = build_task_prompt(track_id, plan, comment=comment)
 
         # Use storage/tracks/{track_id}/tmp/ to stay within the project directory
