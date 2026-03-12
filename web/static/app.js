@@ -33,6 +33,8 @@ const state = {
   collapsedPhases: new Set(), // phase IDs that are collapsed
   _userScrolling: null,     // id of tab where user is scrolling ('spec' | 'tasks' | 'output')
   _autoRefreshBlocked: false, // true if user is scrolling in any section
+  hasPassword: false,       // whether a password is set
+  sessionLocked: false,     // whether session is currently locked
 };
 
 let _termCounter = 0;
@@ -83,6 +85,12 @@ const api = {
   getArchi: () => apiFetch('/api/archi'),
   getMemory: () => apiFetch('/api/memory'),
   clearMemory: () => apiFetch('/api/memory', { method: 'DELETE' }),
+  // Password lock
+  getPasswordStatus: () => apiFetch('/api/settings/password'),
+  setupPassword: (password) => apiFetch('/api/settings/password/setup', { method: 'POST', body: JSON.stringify({ password }) }),
+  verifyPassword: (password) => apiFetch('/api/settings/password/verify', { method: 'POST', body: JSON.stringify({ password }) }),
+  updatePassword: (password) => apiFetch('/api/settings/password', { method: 'PATCH', body: JSON.stringify({ password }) }),
+  clearPassword: () => apiFetch('/api/settings/password/clear', { method: 'POST' }),
 };
 
 // ── DOM refs ───────────────────────────────────────────────────────────────
@@ -130,6 +138,10 @@ async function init() {
   } catch (_) {}
   await refresh();
   setupScrollDetection();
+  // Setup lock screen on page load
+  await setupLockScreen();
+  // Listen for lock state changes from other tabs
+  setupLockStorageSync();
   startPolling();
 }
 
@@ -1748,6 +1760,7 @@ function setupEventListeners() {
   $id('drop-archi').addEventListener('click', () => { $id('settings-dropdown').classList.add('hidden'); openArchiModal(); });
   $id('drop-memory').addEventListener('click', () => { $id('settings-dropdown').classList.add('hidden'); openMemoryModal(); });
   $id('drop-theme').addEventListener('click', () => { $id('settings-dropdown').classList.add('hidden'); openThemeModal(); });
+  $id('drop-lock').addEventListener('click', toggleLockSession);
   $id('drop-project-settings').addEventListener('click', () => { $id('settings-dropdown').classList.add('hidden'); openSettingsModal(); });
 
   // Archi modal
@@ -1790,6 +1803,73 @@ function setupEventListeners() {
     if (e.target === $id('modal-settings-overlay')) closeSettingsModal();
   });
   $id('settings-save').addEventListener('click', saveSettings);
+  // Settings tabs
+  document.querySelectorAll('.settings-tab').forEach(btn => {
+    btn.addEventListener('click', () => _switchSettingsTab(btn.dataset.tab));
+  });
+
+  // Lock Setup Modal
+  $id('lock-setup-password-toggle').addEventListener('click', () => {
+    const input = $id('lock-setup-password-input');
+    const btn = $id('lock-setup-password-toggle');
+    if (input.type === 'password') {
+      input.type = 'text';
+      btn.textContent = '👁‍🗨';
+    } else {
+      input.type = 'password';
+      btn.textContent = '👁';
+    }
+  });
+  $id('lock-setup-confirm').addEventListener('click', async () => {
+    const password = $id('lock-setup-password-input').value;
+    await saveLockPassword(password);
+  });
+  $id('lock-setup-cancel').addEventListener('click', closeLockSetupModal);
+  $id('lock-setup-password-input').addEventListener('keypress', async (e) => {
+    if (e.key === 'Enter') {
+      const password = $id('lock-setup-password-input').value;
+      await saveLockPassword(password);
+    }
+  });
+
+  // Lock Screen Modal
+  $id('lock-screen-password-toggle').addEventListener('click', () => {
+    const input = $id('lock-screen-password-input');
+    const btn = $id('lock-screen-password-toggle');
+    if (input.type === 'password') {
+      input.type = 'text';
+      btn.textContent = '👁‍🗨';
+    } else {
+      input.type = 'password';
+      btn.textContent = '👁';
+    }
+  });
+  $id('lock-screen-unlock').addEventListener('click', async () => {
+    const password = $id('lock-screen-password-input').value;
+    await verifyPasswordAndUnlock(password);
+  });
+  $id('lock-screen-password-input').addEventListener('keypress', async (e) => {
+    if (e.key === 'Enter') {
+      const password = $id('lock-screen-password-input').value;
+      await verifyPasswordAndUnlock(password);
+    }
+  });
+
+  // Settings Security tab - password input
+  const settingsPasswordToggle = $id('settings-password-toggle');
+  if (settingsPasswordToggle) {
+    settingsPasswordToggle.addEventListener('click', () => {
+      const input = $id('settings-password-input');
+      const btn = $id('settings-password-toggle');
+      if (input.type === 'password') {
+        input.type = 'text';
+        btn.textContent = '👁‍🗨';
+      } else {
+        input.type = 'password';
+        btn.textContent = '👁';
+      }
+    });
+  }
 }
 
 function selectTrackType(type) {
@@ -2330,11 +2410,122 @@ function closeThemeModal() {
 }
 
 // ── Settings modal ───────────────────────────────────────────────────────────
+let _settingsActiveTab = 'paths';
+let _settingsModelsData = null;
+
+function _switchSettingsTab(tab) {
+  _settingsActiveTab = tab;
+  document.querySelectorAll('.settings-tab').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.tab === tab);
+  });
+  $id('settings-tab-paths').classList.toggle('hidden', tab !== 'paths');
+  $id('settings-tab-models').classList.toggle('hidden', tab !== 'models');
+  $id('settings-tab-security').classList.toggle('hidden', tab !== 'security');
+}
+
+async function _loadModelsTab() {
+  // Load tools inventory (all tools with availability flag)
+  let toolsData = null;
+  try { toolsData = await apiFetch('/api/config/tools'); } catch (_) {}
+  const toolsTable = $id('settings-tools-table');
+  toolsTable.innerHTML = '';
+  for (const [alias, info] of Object.entries((toolsData || {}).tools || {})) {
+    const chip = document.createElement('div');
+    chip.className = 'settings-tool-chip' + (info.available ? ' available' : '');
+    chip.title = info.description || alias;
+    chip.innerHTML = `<span class="settings-tool-chip-dot"></span>${alias}`;
+    toolsTable.appendChild(chip);
+  }
+
+  // Load phase→model config
+  try {
+    _settingsModelsData = await apiFetch('/api/settings/models');
+  } catch (_) {
+    _settingsModelsData = null;
+  }
+  const container = $id('settings-models-rows');
+  container.innerHTML = '';
+  if (!_settingsModelsData || !Object.keys(_settingsModelsData.tools || {}).length) {
+    $id('settings-models-unavailable').classList.remove('hidden');
+    return;
+  }
+  $id('settings-models-unavailable').classList.add('hidden');
+
+  const { tools, current, phases, defaults } = _settingsModelsData;
+  const toolAliases = Object.keys(tools);
+
+  // Header row
+  ['Phase', 'Tool', 'Model'].forEach(h => {
+    const hdr = document.createElement('div');
+    hdr.className = 'settings-grid-header';
+    hdr.textContent = h;
+    container.appendChild(hdr);
+  });
+
+  for (const phase of (phases || [])) {
+    const currentVal = current[phase] || defaults[phase] || '';
+    let currentTool = toolAliases[0] || '';
+    let currentModel = '';
+    if (currentVal.includes('/')) {
+      [currentTool, currentModel] = currentVal.split('/');
+    }
+
+    // Phase label
+    const label = document.createElement('div');
+    label.className = 'settings-phase-label';
+    label.textContent = phase;
+
+    // Tool select
+    const toolSel = document.createElement('select');
+    toolSel.id = `settings-tool-${phase}`;
+    for (const toolAlias of toolAliases) {
+      const opt = document.createElement('option');
+      opt.value = toolAlias;
+      opt.textContent = toolAlias;
+      opt.title = tools[toolAlias]?.description || toolAlias;
+      if (toolAlias === currentTool) opt.selected = true;
+      toolSel.appendChild(opt);
+    }
+
+    // Model select — cascades from tool select
+    const modelSel = document.createElement('select');
+    modelSel.id = `settings-model-${phase}`;
+
+    const populateModels = (toolAlias, selectedModel) => {
+      modelSel.innerHTML = '';
+      for (const [mAlias, mDesc] of Object.entries(tools[toolAlias]?.models || {})) {
+        const opt = document.createElement('option');
+        opt.value = mAlias;
+        opt.textContent = `${mAlias} — ${mDesc}`;
+        if (mAlias === selectedModel) opt.selected = true;
+        modelSel.appendChild(opt);
+      }
+    };
+    populateModels(currentTool || toolAliases[0], currentModel);
+    toolSel.addEventListener('change', () => populateModels(toolSel.value, ''));
+
+    container.appendChild(label);
+    container.appendChild(toolSel);
+    container.appendChild(modelSel);
+  }
+}
+
 async function openSettingsModal() {
   try {
     const data = await apiFetch('/api/settings/protected-paths');
     $id('settings-protected-paths').value = (data.protected_paths || []).join('\n');
   } catch (_) {}
+  // Load password status
+  try {
+    const pwStatus = await api.getPasswordStatus();
+    if (pwStatus && pwStatus.has_password) {
+      $id('settings-password-input').placeholder = 'Leave empty to keep current password';
+    } else {
+      $id('settings-password-input').placeholder = 'Enter password (min 4 chars)';
+    }
+  } catch (_) {}
+  _switchSettingsTab('paths');
+  await _loadModelsTab();
   $id('modal-settings-overlay').classList.remove('hidden');
 }
 
@@ -2343,13 +2534,36 @@ function closeSettingsModal() {
 }
 
 async function saveSettings() {
-  const raw = $id('settings-protected-paths').value;
-  const paths = raw.split('\n').map(l => l.trim()).filter(Boolean);
-  await apiFetch('/api/settings/protected-paths', {
-    method: 'POST',
-    body: JSON.stringify({ protected_paths: paths }),
-  });
-  closeSettingsModal();
+  try {
+    if (_settingsActiveTab === 'paths') {
+      const raw = $id('settings-protected-paths').value;
+      const paths = raw.split('\n').map(l => l.trim()).filter(Boolean);
+      await apiFetch('/api/settings/protected-paths', {
+        method: 'POST',
+        body: JSON.stringify({ protected_paths: paths }),
+      });
+    } else if (_settingsActiveTab === 'models' && _settingsModelsData) {
+      const models = {};
+      for (const phase of (_settingsModelsData.phases || [])) {
+        const toolSel = $id(`settings-tool-${phase}`);
+        const modelSel = $id(`settings-model-${phase}`);
+        if (toolSel && modelSel) models[phase] = `${toolSel.value}/${modelSel.value}`;
+      }
+      await apiFetch('/api/settings/models', {
+        method: 'PATCH',
+        body: JSON.stringify({ models }),
+      });
+    } else if (_settingsActiveTab === 'security') {
+      const password = $id('settings-password-input').value;
+      if (password) {
+        await updateSessionPassword(password);
+      }
+    }
+    closeSettingsModal();
+    showToast('Settings saved');
+  } catch (err) {
+    showToast(`Save failed: ${err.message || err}`);
+  }
 }
 
 function _initThemeListeners() {
@@ -2369,6 +2583,145 @@ function setupTheme(projectName) {
   _themeProjectKey = `arche-theme-${projectName || 'default'}`;
   const saved = localStorage.getItem(_themeKey());
   if (saved && THEMES[saved]) _applyThemeCss(saved);
+}
+
+// ── Password Lock ───────────────────────────────────────────────────────────
+async function setupLockScreen() {
+  // Check if password is set
+  const status = await api.getPasswordStatus();
+  if (!status) return;
+
+  state.hasPassword = status.has_password;
+
+  // Check localStorage for lock status (shared across tabs)
+  const isLockedSession = localStorage.getItem('isLocked') === 'true';
+
+  if (state.hasPassword && isLockedSession) {
+    state.sessionLocked = true;
+    openLockScreenModal();
+  }
+}
+
+function setupLockStorageSync() {
+  // Sync lock state across tabs when localStorage changes
+  window.addEventListener('storage', (event) => {
+    if (event.key === 'isLocked') {
+      const isNowLocked = event.newValue === 'true';
+
+      if (isNowLocked && state.hasPassword && !state.sessionLocked) {
+        // Lock was activated in another tab - lock this tab too
+        state.sessionLocked = true;
+        openLockScreenModal();
+      } else if (!isNowLocked && state.sessionLocked) {
+        // Lock was deactivated in another tab - unlock this tab too
+        state.sessionLocked = false;
+        closeLockScreenModal();
+      }
+    }
+  });
+}
+
+function openLockSetupModal() {
+  $id('lock-setup-password-input').value = '';
+  $id('lock-setup-password-input').type = 'password';
+  $id('lock-setup-password-toggle').textContent = '👁';
+  $id('modal-lock-setup-overlay').classList.remove('hidden');
+  $id('lock-setup-password-input').focus();
+}
+
+function closeLockSetupModal() {
+  $id('modal-lock-setup-overlay').classList.add('hidden');
+}
+
+function openLockScreenModal() {
+  $id('lock-screen-password-input').value = '';
+  $id('lock-screen-password-input').type = 'password';
+  $id('lock-screen-password-toggle').textContent = '👁';
+  $id('lock-screen-error').classList.add('hidden');
+  $id('modal-lock-screen-overlay').classList.remove('hidden');
+  $id('lock-screen-password-input').focus();
+}
+
+function closeLockScreenModal() {
+  $id('modal-lock-screen-overlay').classList.add('hidden');
+}
+
+async function toggleLockSession() {
+  // Close settings dropdown
+  $id('settings-dropdown').classList.add('hidden');
+
+  if (!state.hasPassword) {
+    // First time - open setup modal
+    openLockSetupModal();
+  } else {
+    // Already has password - lock the session
+    state.sessionLocked = true;
+    localStorage.setItem('isLocked', 'true');
+    openLockScreenModal();
+  }
+}
+
+async function saveLockPassword(password) {
+  if (!password || password.length < 4) {
+    alert('Password must be at least 4 characters');
+    return false;
+  }
+
+  try {
+    const result = await api.setupPassword(password);
+    if (result && result.ok) {
+      state.hasPassword = true;
+      state.sessionLocked = true;
+      localStorage.setItem('isLocked', 'true');
+      closeLockSetupModal();
+      showToast('Password set and session locked');
+      return true;
+    }
+  } catch (e) {
+    console.error('Failed to set password', e);
+  }
+  return false;
+}
+
+async function verifyPasswordAndUnlock(password) {
+  try {
+    const result = await api.verifyPassword(password);
+    if (result && result.ok) {
+      state.sessionLocked = false;
+      localStorage.setItem('isLocked', 'false');
+      closeLockScreenModal();
+      showToast('Session unlocked');
+      return true;
+    } else {
+      $id('lock-screen-error').classList.remove('hidden');
+      $id('lock-screen-password-input').value = '';
+      return false;
+    }
+  } catch (e) {
+    console.error('Failed to verify password', e);
+    $id('lock-screen-error').classList.remove('hidden');
+    return false;
+  }
+}
+
+async function updateSessionPassword(password) {
+  if (!password || password.length < 4) {
+    alert('Password must be at least 4 characters');
+    return false;
+  }
+
+  try {
+    const result = await api.updatePassword(password);
+    if (result && result.ok) {
+      state.hasPassword = true;
+      $id('settings-password-input').value = '';
+      showToast('Password updated');
+      return true;
+    }
+  } catch (e) {
+    console.error('Failed to update password', e);
+  }
+  return false;
 }
 
 // ── Boot ───────────────────────────────────────────────────────────────────
@@ -2424,4 +2777,7 @@ window.confirmRunTask = confirmRunTask;
 window.openAddTaskModal = openAddTaskModal;
 window.closeAddTaskModal = closeAddTaskModal;
 window.confirmAddTask = confirmAddTask;
+window.toggleLockSession = toggleLockSession;
+window.closeLockSetupModal = closeLockSetupModal;
+window.closeLockScreenModal = closeLockScreenModal;
 window.confirmDoneTrack = confirmDoneTrack;

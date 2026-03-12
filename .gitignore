@@ -2,3 +2,6 @@
 .claude/
 .arche-storage/
 web/__pycache__/
+.git/
+__pycache/
+core/__pycache__/
