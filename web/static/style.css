@@ -137,6 +137,122 @@ body {
 }
 .settings-dropdown-item:hover { background: var(--bg3); }
 
+.settings-tab:hover { color: var(--text) !important; }
+.settings-tab:focus { outline: none; }
+
+/* ── Settings modal ──────────────────────────────────── */
+.settings-modal { width: 680px; max-width: 96vw; max-height: 88vh; overflow-y: auto; }
+
+.settings-tab-bar {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 14px;
+}
+
+.settings-tab {
+  padding: 6px 14px;
+  font-size: 12px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-family: inherit;
+  transition: color 0.1s;
+}
+.settings-tab.active { border-bottom-color: var(--cyan); color: var(--text); }
+
+.settings-section-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+
+.settings-section-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+
+.settings-tools-table {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.settings-tool-chip {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  cursor: default;
+}
+.settings-tool-chip.available {
+  border-color: var(--cyan);
+  color: var(--cyan);
+  background: color-mix(in srgb, var(--cyan) 10%, transparent);
+}
+.settings-tool-chip-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  flex-shrink: 0;
+}
+.settings-tool-chip.available .settings-tool-chip-dot { background: var(--cyan); }
+
+.settings-models-grid {
+  display: grid;
+  grid-template-columns: 90px 150px 1fr;
+  gap: 6px 12px;
+  align-items: center;
+}
+
+.settings-grid-header {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-dim);
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  padding-bottom: 2px;
+}
+
+.settings-phase-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  align-self: center;
+}
+
+.modal select {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 3px 6px;
+  font-size: 12px;
+  font-family: inherit;
+  width: 100%;
+  outline: none;
+}
+.modal select:focus { border-color: var(--cyan); }
+
+.settings-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 14px;
+}
+
 /* ── App layout ─────────────────────────────────────── */
 #app {
   display: flex;
@@ -952,11 +1068,14 @@ body {
   background: var(--bg2);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 24px;
-  width: 400px;
+  padding: 28px;
+  width: 560px;
+  max-width: 96vw;
+  max-height: 88vh;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
 }
 
 .modal h3 { font-size: 14px; color: var(--text); }
@@ -966,7 +1085,7 @@ body {
   color: var(--text-dim);
 }
 
-.modal-wide { width: 520px; max-height: 90vh; overflow-y: auto; }
+.modal-wide { width: 700px; max-height: 90vh; overflow-y: auto; }
 
 /* ── Track type selector ─────────────────────────────────── */
 .track-type-selector {
@@ -1025,7 +1144,7 @@ body {
 
 /* ── Docs modal ─────────────────────────────────────────── */
 .modal-docs {
-  width: 680px;
+  width: 860px;
   max-width: 96vw;
   max-height: 90vh;
   display: flex;
@@ -1388,7 +1507,7 @@ body {
   color: var(--text-muted);
   white-space: pre-wrap;
   overflow-y: auto;
-  max-height: 60vh;
+  max-height: 70vh;
   padding: 8px;
   background: var(--bg3);
   border-radius: 4px;
@@ -1400,3 +1519,61 @@ body {
 ::-webkit-scrollbar-track { background: var(--bg); }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--border); filter: brightness(1.4); }
+
+/* ── Password Lock UI ───────────────────────────────────── */
+.modal-lock {
+  width: 360px;
+}
+
+.password-input-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.password-input-row input {
+  flex: 1;
+  padding: 8px 12px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 14px;
+}
+
+.password-input-row input:focus {
+  outline: none;
+  border-color: var(--cyan);
+}
+
+.password-toggle {
+  padding: 8px 10px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.modal-lock-screen {
+  width: 400px;
+}
+
+.lock-screen-overlay {
+  background: rgba(0, 0, 0, 0.95);
+  z-index: 1000;
+  pointer-events: auto;
+}
+
+.lock-screen-overlay .modal {
+  pointer-events: auto;
+}
+
+.lock-screen-error {
+  color: var(--red);
+  font-size: 13px;
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  background: rgba(248, 81, 73, 0.1);
+  border-radius: 4px;
+  border-left: 2px solid var(--red);
+}

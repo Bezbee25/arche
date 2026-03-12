@@ -1,0 +1,134 @@
+# arche model registry — default template
+# Copied to .arche-storage/models.yaml on `arche init`
+#
+# SCHEMA
+# ------
+# version: int                  — schema version (bump on breaking change)
+#
+# tools:
+#   <alias>:                    — tool alias used in project.yaml  (e.g. "claude", "gemini")
+#     binary: str               — executable name in PATH          (e.g. "claude", "gh")
+#     description: str          — human-readable label
+#     batch_args: [str]         — extra args for non-interactive (stdin pipe) calls
+#     interactive_args: [str]   — extra args for PTY/interactive calls
+#     model_flag: str           — flag to pass model id (empty = CLI ignores --model)
+#     system_flag: str          — flag for system prompt (empty = not supported)
+#     tools_flag: str           — flag for tool grants comma-list (empty = not supported)
+#     models:
+#       <model_alias>:          — short alias used in project.yaml (e.g. "opus", "flash")
+#         id: str               — actual model id string passed to the CLI
+#         description: str      — human-readable label
+#     default_model: str        — model_alias used when none specified
+#
+# project.yaml models section  (NEW FORMAT)
+# ------------------------------------------
+# models:
+#   <phase>: "<tool_alias>/<model_alias>"   e.g. "claude/sonnet", "gemini/flash"
+#
+# Lookup resolution order:
+#   1. track meta.yaml  → models.<phase>
+#   2. .arche-storage/project.yaml → models.<phase>
+#   3. built-in DEFAULT_MODELS in router.py  (fallback, always present)
+
+version: 1
+
+tools:
+
+  claude:
+    binary: claude
+    description: "Anthropic Claude Code CLI"
+    # -p = print/batch mode; --dangerously-skip-permissions = allow file ops without prompt
+    batch_args: ["-p", "--dangerously-skip-permissions"]
+    interactive_args: []
+    model_flag: "--model"
+    system_flag: "--system-prompt"
+    tools_flag: "--allowedTools"
+    models:
+      opus:
+        id: "claude-opus-4-6"
+        description: "Most capable, best reasoning — use for spec/planning"
+      sonnet:
+        id: "claude-sonnet-4-6"
+        description: "Fast, strong, recommended — use for dev/debug"
+      haiku:
+        id: "claude-haiku-4-5"
+        description: "Fastest, cheapest — use for review"
+    default_model: sonnet
+
+  gemini:
+    binary: gemini
+    description: "Google Gemini CLI"
+    batch_args: ["-y"]
+    interactive_args: ["-y"]
+    model_flag: "--model"
+    system_flag: ""         # Gemini CLI does not support --system-prompt
+    tools_flag: ""          # Gemini CLI does not support tool grants
+    models:
+      pro-2-5:
+        id: "gemini-2.5-pro"
+        description: "Gemini 2.5 Pro — most capable"
+      flash-2-5:
+        id: "gemini-2.5-flash"
+        description: "Gemini 2.5 Flash — fast, efficient"
+      flash-2-5-lite:
+        id: "gemini-2.5-flash-lite"
+        description: "Gemini 2.5 Flash Lite — ultra-fast"
+      pro-3:
+        id: "gemini-3-pro"
+        description: "Gemini 3 Pro — reasoning"
+      flash-3:
+        id: "gemini-3-flash"
+        description: "Gemini 3 Flash — fast reasoning"
+      pro-3-1:
+        id: "gemini-3.1-pro"
+        description: "Gemini 3.1 Pro — latest reasoning model"
+    default_model: flash-2-5
+
+  codex:
+    binary: codex
+    description: "OpenAI Codex CLI"
+    batch_args: ["-q"]
+    interactive_args: []
+    model_flag: ""          # Codex CLI selects model internally
+    system_flag: ""
+    tools_flag: ""
+    models:
+      default:
+        id: "codex"
+        description: "OpenAI code model"
+    default_model: default
+
+  vibe:
+    binary: vibe
+    description: "Vibe (Mistral AI) CLI"
+    batch_args: ["-p"]
+    interactive_args: []
+    model_flag: ""          # Vibe CLI selects model internally
+    system_flag: ""
+    tools_flag: ""
+    models:
+      devstral:
+        id: "devstral-small"
+        description: "Devstral Small — Mistral AI code model"
+    default_model: devstral
+
+  copilot:
+    binary: gh
+    description: "GitHub Copilot via gh CLI"
+    # gh copilot suggest reads from stdin; -t shell = shell script target
+    batch_args: ["copilot", "suggest", "-t", "shell"]
+    interactive_args: ["copilot", "suggest"]
+    model_flag: "--model"
+    system_flag: ""
+    tools_flag: ""
+    models:
+      opus:
+        id: "claude-opus-4.6"
+        description: "Claude Opus 4.6 via GitHub Copilot"
+      sonnet:
+        id: "claude-sonnet-4.6"
+        description: "Claude Sonnet 4.6 via GitHub Copilot"
+      haiku:
+        id: "claude-haiku-4.5"
+        description: "Claude Haiku 4.5 via GitHub Copilot"
+    default_model: sonnet

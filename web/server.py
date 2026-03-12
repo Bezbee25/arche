@@ -36,6 +36,7 @@ from core.track_manager import (
     update_phase,
     delete_phase,
     _DEFAULT_PHASE_ID,
+    STORAGE_DIR,
 )
 from core.task_engine import (
     add_task,
@@ -110,6 +111,9 @@ class BulkTaskRunRequest(BaseModel):
 class TemplateGenerationRequest(BaseModel):
     description: str
     subtypes: list[str] = []
+
+class PasswordRequest(BaseModel):
+    password: str
 
 
 def _parse_claude_json_line(raw: str) -> str:
@@ -223,6 +227,99 @@ def create_app() -> FastAPI:
         project["protected_paths"] = [p.strip() for p in paths if p.strip()]
         save_project(project)
         return {"protected_paths": project["protected_paths"]}
+
+    @app.get("/api/config/tools")
+    def get_config_tools():
+        from core.model_registry import ModelRegistry
+        registry = ModelRegistry.load(STORAGE_DIR)
+        available = set(registry.detect_available())
+        result = {}
+        for alias in registry.list_tools():
+            tool = registry.get_tool(alias) or {}
+            models = registry.list_models(alias)
+            result[alias] = {
+                "binary": tool.get("binary", alias),
+                "description": tool.get("description", alias),
+                "available": alias in available,
+                "models": {
+                    m_alias: {
+                        "id": mdata.get("id", m_alias),
+                        "description": mdata.get("description", m_alias),
+                    }
+                    for m_alias, mdata in models.items()
+                },
+                "default_model": tool.get("default_model"),
+            }
+        return {"tools": result}
+
+    @app.get("/api/settings/models")
+    def get_models_config():
+        from core.model_registry import ModelRegistry
+        from core.router import DEFAULT_MODELS
+        registry = ModelRegistry.load(STORAGE_DIR)
+        available = registry.detect_available()
+        tools_info: dict = {}
+        for tool_alias in available:
+            tool = registry.get_tool(tool_alias) or {}
+            models = registry.list_models(tool_alias)
+            tools_info[tool_alias] = {
+                "description": tool.get("description", tool_alias),
+                "models": {
+                    alias: mdata.get("description", alias)
+                    for alias, mdata in models.items()
+                },
+            }
+        project = load_project() or {}
+        current = project.get("models", {})
+        phases = list(DEFAULT_MODELS.keys())
+        return {"tools": tools_info, "current": current, "phases": phases, "defaults": DEFAULT_MODELS}
+
+    @app.patch("/api/settings/models")
+    def patch_models_config(req: dict):
+        project = load_project() or {}
+        project["models"] = req.get("models", {})
+        save_project(project)
+        return {"ok": True, "models": project["models"]}
+
+    # ── Password Lock Endpoints ─────────────────────────────────────────────────
+    @app.get("/api/settings/password")
+    def get_password_status():
+        project = load_project() or {}
+        has_password = "password_lock" in project and project["password_lock"]
+        return {"has_password": has_password, "is_locked": False}
+
+    @app.post("/api/settings/password/setup")
+    def setup_password(req: PasswordRequest):
+        if not req.password or len(req.password) < 4:
+            raise HTTPException(status_code=400, detail="Password must be at least 4 characters")
+        project = load_project() or {}
+        project["password_lock"] = req.password
+        save_project(project)
+        return {"ok": True}
+
+    @app.post("/api/settings/password/verify")
+    def verify_password(req: PasswordRequest):
+        project = load_project() or {}
+        stored_password = project.get("password_lock", "")
+        is_valid = stored_password == req.password
+        return {"ok": is_valid}
+
+    @app.patch("/api/settings/password")
+    def update_password(req: PasswordRequest):
+        if not req.password or len(req.password) < 4:
+            raise HTTPException(status_code=400, detail="Password must be at least 4 characters")
+        project = load_project() or {}
+        project["password_lock"] = req.password
+        save_project(project)
+        return {"ok": True, "has_password": True}
+
+    @app.post("/api/settings/password/clear")
+    def clear_password():
+        project = load_project() or {}
+        if "password_lock" in project:
+            del project["password_lock"]
+            save_project(project)
+        return {"ok": True}
 
     @app.get("/api/settings/theme")
     def get_theme():
@@ -936,12 +1033,46 @@ def create_app() -> FastAPI:
         prompt_file = tmp_dir / f"prompt-{task_id[:8]}-{uuid.uuid4().hex[:8]}.txt"
         prompt_file.write_text(prompt, encoding="utf-8")
 
+        if cli == "claude":
+            cmd += ["--output-format", "stream-json", "--verbose"]
+
         script_file = tmp_dir / f"run-{uuid.uuid4().hex[:8]}.sh"
         auto_done_line = "[ $_EXIT -eq 0 ] && arche task done 2>/dev/null && echo '\\n✓ Task marked as done.'" if auto_done else ""
+        cmd_display = ' '.join(shlex.quote(c) for c in cmd)
+
+        # Inline Python parser: extracts readable text from claude's stream-json NDJSON
+        _PARSER = (
+            "import sys,json\n"
+            "for line in sys.stdin:\n"
+            " line=line.strip()\n"
+            " if not line: continue\n"
+            " try:\n"
+            "  o=json.loads(line)\n"
+            "  t=o.get('type','')\n"
+            "  if t=='assistant':\n"
+            "   for b in o.get('message',o).get('content',[]):\n"
+            "    if not isinstance(b,dict): continue\n"
+            "    if b.get('type')=='text': sys.stdout.write(b['text']); sys.stdout.flush()\n"
+            "    elif b.get('type')=='tool_use':\n"
+            "     n=b.get('name','?'); i=b.get('input',{})\n"
+            "     v=next(iter(i.values()),'') if i else ''\n"
+            "     print(f'[{n}: {v}]',flush=True)\n"
+            "  elif t=='result' and o.get('is_error'): print(f'\\n⚠ {o.get(\"result\",\"\")}',flush=True)\n"
+            " except: sys.stdout.write(line+'\\n'); sys.stdout.flush()\n"
+        )
+
+        if cli == "claude":
+            run_line = f"{cmd_display} < {shlex.quote(str(prompt_file))} | python3 -u -c {shlex.quote(_PARSER)}"
+            exit_line = "_EXIT=${PIPESTATUS[0]}\n"
+        else:
+            run_line = f"{cmd_display} < {shlex.quote(str(prompt_file))}"
+            exit_line = "_EXIT=$?\n"
+
         script_file.write_text(
             "#!/bin/bash\n"
-            f"{' '.join(shlex.quote(c) for c in cmd)} < {shlex.quote(str(prompt_file))}\n"
-            "_EXIT=$?\n"
+            f"echo '[arche] cmd: {cmd_display}'\n"
+            f"{run_line}\n"
+            f"{exit_line}"
             f"rm -f {shlex.quote(str(prompt_file))}\n"
             f"rm -f {shlex.quote(str(script_file))}\n"
             f"{auto_done_line}\n",

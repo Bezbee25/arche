@@ -2593,10 +2593,11 @@ async function setupLockScreen() {
 
   state.hasPassword = status.has_password;
 
-  // Check localStorage for lock status (shared across tabs)
-  const isLockedSession = localStorage.getItem('isLocked') === 'true';
+  // Check localStorage for unlock status (shared across tabs, private browsing friendly)
+  // Default: if password exists, assume locked unless explicitly marked as unlocked
+  const isUnlockedSession = localStorage.getItem('isLocked') === 'false';
 
-  if (state.hasPassword && isLockedSession) {
+  if (state.hasPassword && !isUnlockedSession) {
     state.sessionLocked = true;
     openLockScreenModal();
   }

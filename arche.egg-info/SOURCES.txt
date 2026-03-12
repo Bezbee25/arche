@@ -16,6 +16,7 @@ arche.egg-info/requires.txt
 arche.egg-info/top_level.txt
 core/__init__.py
 core/context.py
+core/model_registry.py
 core/plan_manager.py
 core/router.py
 core/scanner.py

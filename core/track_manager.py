@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import re
+import shutil
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 import yaml
+
+_MODELS_DEFAULT_YAML = Path(__file__).parent / "models_default.yaml"
 
 STORAGE_DIR = Path(".arche-storage")
 TRACKS_DIR = STORAGE_DIR / "tracks"
@@ -147,6 +150,11 @@ def new_track(name: str, phase: str = "spec", track_type: str = "feature") -> di
     spec_path = _spec_path(track_id)
     if not spec_path.exists():
         spec_path.write_text(f"# Spec: {name}\n\n")
+
+    # Copy model registry for per-track overrides
+    models_dst = plan_dir / "models.yaml"
+    if not models_dst.exists() and _MODELS_DEFAULT_YAML.exists():
+        shutil.copy(_MODELS_DEFAULT_YAML, models_dst)
 
     set_current_track_id(track_id)
     return meta
