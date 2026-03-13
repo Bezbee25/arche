@@ -203,6 +203,11 @@ def _build_phases_detail(track_id: str) -> list[dict]:
 # Token → init_cmd mapping for interactive terminal sessions
 _pending_terminal_inits: dict[str, str] = {}
 
+# Track active run processes per track_id (stores Process objects)
+_active_runs: dict[str, list] = {}
+# Tracks for which a stop was requested (bulk loop guard)
+_stop_requested: set[str] = set()
+
 
 def create_app() -> FastAPI:
     app = FastAPI(title="arche", docs_url="/api/docs")
@@ -917,6 +922,10 @@ def create_app() -> FastAPI:
                     stderr=asyncio.subprocess.STDOUT,  # merge stderr → no deadlock
                     limit=10 * 1024 * 1024,  # 10 MB — Claude JSON lines can be large
                 )
+                # Register for stop-run
+                if track_id not in _active_runs:
+                    _active_runs[track_id] = []
+                _active_runs[track_id].append(proc)
                 print(f"[stream_task_run] Subprocess created, writing {len(prompt)} bytes to stdin")
                 proc.stdin.write(prompt.encode())
                 await proc.stdin.drain()  # flush buffer to the pipe
@@ -975,6 +984,12 @@ def create_app() -> FastAPI:
                 traceback.print_exc()
                 yield f"data: ⚠ Error: {e}\n\n"
             finally:
+                # Unregister process
+                try:
+                    if proc in _active_runs.get(track_id, []):
+                        _active_runs[track_id].remove(proc)
+                except Exception:
+                    pass
                 yield "data: __DONE__\n\n"
 
         return StreamingResponse(
@@ -1082,7 +1097,7 @@ def create_app() -> FastAPI:
         init_cmd = f"bash {shlex.quote(str(script_file))}"
 
         token = str(uuid.uuid4())
-        _pending_terminal_inits[token] = init_cmd
+        _pending_terminal_inits[token] = {"init_cmd": init_cmd, "track_id": track_id}
 
         return {"token": token, "task_title": task_obj.get("title", "")}
 
@@ -1135,75 +1150,147 @@ def create_app() -> FastAPI:
             cmd_base += ["--output-format", "stream-json", "--verbose"]
 
         async def generate_bulk():
-            for task_num, task_id in enumerate(valid_task_ids, 1):
-                # Update current task
-                switch_task(track_id, task_id)
-                start_task(track_id, task_id)
+            # Initialize the active runs list for this track
+            if track_id not in _active_runs:
+                _active_runs[track_id] = []
+            _stop_requested.discard(track_id)  # clear any previous stop signal
 
-                task = task_map[task_id]
-                prompt = build_task_prompt(track_id, plan, comment=req.comment)
+            try:
+                for task_num, task_id in enumerate(valid_task_ids, 1):
+                    # Check if stop was requested
+                    if track_id in _stop_requested:
+                        yield f"data: ⚠ Run stopped by user\n\n"
+                        return
+                    # Check if we've been cancelled
+                    try:
+                        await asyncio.sleep(0)
+                    except asyncio.CancelledError:
+                        yield f"data: ⚠ Run cancelled\n\n"
+                        return
 
-                yield f"data: __TASK_START__ {task_num}/{len(valid_task_ids)} {task['title']}\n\n"
+                    # Update current task
+                    switch_task(track_id, task_id)
+                    start_task(track_id, task_id)
 
-                output_lines: list[str] = []
-                try:
-                    proc = await asyncio.create_subprocess_exec(
-                        *cmd_base,
-                        stdin=asyncio.subprocess.PIPE,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.STDOUT,
-                        limit=10 * 1024 * 1024,
-                    )
-                    proc.stdin.write(prompt.encode())
-                    await proc.stdin.drain()
-                    proc.stdin.close()
+                    task = task_map[task_id]
+                    prompt = build_task_prompt(track_id, plan, comment=req.comment)
 
-                    while True:
-                        if cli == "claude":
-                            line = await proc.stdout.readline()
-                            if not line:
-                                break
-                            raw = line.decode("utf-8", errors="replace")
-                            text = _parse_claude_json_line(raw)
-                            if text:
-                                output_lines.append(text)
-                                sse_lines = text.split("\n")
-                                sse = "\n".join(f"data: {l}" for l in sse_lines)
-                                yield f"{sse}\n\n"
-                        else:
-                            chunk = await proc.stdout.read(4096)
-                            if not chunk:
-                                break
-                            text = chunk.decode("utf-8", errors="replace")
-                            output_lines.append(text)
-                            lines = text.split("\n")
-                            sse = "\n".join(f"data: {l}" for l in lines)
-                            yield f"{sse}\n\n"
+                    yield f"data: __TASK_START__ {task_num}/{len(valid_task_ids)} {task['title']}\n\n"
 
-                    await proc.wait()
+                    output_lines: list[str] = []
+                    try:
+                        proc = await asyncio.create_subprocess_exec(
+                            *cmd_base,
+                            stdin=asyncio.subprocess.PIPE,
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.STDOUT,
+                            limit=10 * 1024 * 1024,
+                        )
+                        # Track the subprocess
+                        _active_runs[track_id].append(proc)
+                        
+                        try:
+                            proc.stdin.write(prompt.encode())
+                            await proc.stdin.drain()
+                            proc.stdin.close()
 
-                    output_str = "".join(output_lines)
-                    notes = extract_archi_notes(output_str)
-                    if notes:
-                        append_archi(track_id, notes)
+                            while True:
+                                if cli == "claude":
+                                    line = await proc.stdout.readline()
+                                    if not line:
+                                        break
+                                    raw = line.decode("utf-8", errors="replace")
+                                    text = _parse_claude_json_line(raw)
+                                    if text:
+                                        output_lines.append(text)
+                                        sse_lines = text.split("\n")
+                                        sse = "\n".join(f"data: {l}" for l in sse_lines)
+                                        yield f"{sse}\n\n"
+                                else:
+                                    chunk = await proc.stdout.read(4096)
+                                    if not chunk:
+                                        break
+                                    text = chunk.decode("utf-8", errors="replace")
+                                    output_lines.append(text)
+                                    lines = text.split("\n")
+                                    sse = "\n".join(f"data: {l}" for l in lines)
+                                    yield f"{sse}\n\n"
 
-                    # Auto-done — save archi notes as task notes so next task sees findings
-                    if req.auto_done:
-                        task_notes = notes[:600].strip() if notes else ""
-                        complete_task(track_id, task_id, task_notes)
+                            await proc.wait()
 
-                    yield f"data: __TASK_DONE__\n\n"
+                            output_str = "".join(output_lines)
+                            notes = extract_archi_notes(output_str)
+                            if notes:
+                                append_archi(track_id, notes)
 
-                except Exception as e:
-                    yield f"data: ⚠ Error in task {task_num}: {e}\n\n"
+                            # Auto-done — save archi notes as task notes so next task sees findings
+                            if req.auto_done:
+                                task_notes = notes[:600].strip() if notes else ""
+                                complete_task(track_id, task_id, task_notes)
 
-            yield f"data: __BULK_DONE__ {len(valid_task_ids)} tasks completed\n\n"
+                            yield f"data: __TASK_DONE__\n\n"
+                        finally:
+                            # Remove from active runs when done
+                            if proc in _active_runs.get(track_id, []):
+                                _active_runs[track_id].remove(proc)
+
+                    except asyncio.CancelledError:
+                        yield f"data: ⚠ Task {task_num} cancelled\n\n"
+                        return
+                    except Exception as e:
+                        yield f"data: ⚠ Error in task {task_num}: {e}\n\n"
+
+                yield f"data: __BULK_DONE__ {len(valid_task_ids)} tasks completed\n\n"
+            finally:
+                # Clean up
+                if track_id in _active_runs:
+                    _active_runs[track_id] = []
+                _stop_requested.discard(track_id)
+
 
         return StreamingResponse(
             generate_bulk(),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
+
+    @app.post("/api/tracks/{track_id}/stop-run")
+    async def stop_run(track_id: str):
+        """Stop all active run processes for a track."""
+        import signal
+
+        count = 0
+
+        # Signal bulk loop to stop
+        _stop_requested.add(track_id)
+
+        # Stop PTY processes via TerminalManager
+        pty_count = terminal_manager.stop_track_processes(track_id)
+        count += pty_count
+        
+        # Stop async subprocess processes
+        if track_id in _active_runs:
+            processes = _active_runs[track_id]
+            for proc in processes:
+                if proc and proc.returncode is None:
+                    try:
+                        proc.terminate()
+                        try:
+                            await asyncio.wait_for(proc.wait(), timeout=2)
+                        except asyncio.TimeoutError:
+                            proc.kill()
+                            await proc.wait()
+                        count += 1
+                    except Exception as e:
+                        print(f"[stop_run] Error terminating process: {e}")
+            _active_runs[track_id] = []
+        return {"status": "stopped", "count": count}
+
+    @app.get("/api/tracks/{track_id}/run-status")
+    def get_run_status(track_id: str):
+        """Check if a track has an active run."""
+        active = len(_active_runs.get(track_id, [])) > 0
+        return {"running": active}
 
     @app.get("/api/archi")
     def get_archi():
@@ -1420,8 +1507,10 @@ def create_app() -> FastAPI:
 
     @app.websocket("/ws/terminal")
     async def terminal_ws(websocket: WebSocket, token: str = None, cols: int = 220, rows: int = 50):
-        init_cmd = _pending_terminal_inits.pop(token, None) if token else None
-        await terminal_manager.handle(websocket, init_cmd=init_cmd, cols=cols, rows=rows)
+        token_data = _pending_terminal_inits.pop(token, None) if token else None
+        init_cmd = token_data.get("init_cmd") if isinstance(token_data, dict) else token_data
+        track_id = token_data.get("track_id") if isinstance(token_data, dict) else None
+        await terminal_manager.handle(websocket, init_cmd=init_cmd, cols=cols, rows=rows, track_id=track_id)
 
     # ── Static files / SPA ───────────────────────────────────────────────
 

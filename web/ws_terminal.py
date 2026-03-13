@@ -12,8 +12,12 @@ from fastapi.websockets import WebSocket, WebSocketDisconnect, WebSocketState
 
 class TerminalManager:
     """Manages WebSocket ↔ pty sessions."""
+    
+    def __init__(self):
+        # Track active processes by track_id for stopping
+        self.active_procs_by_track = {}
 
-    async def handle(self, websocket: WebSocket, init_cmd: str | None = None, cols: int = 220, rows: int = 50) -> None:
+    async def handle(self, websocket: WebSocket, init_cmd: str | None = None, cols: int = 220, rows: int = 50, track_id: str | None = None) -> None:
         await websocket.accept()
 
         try:
@@ -46,6 +50,12 @@ class TerminalManager:
             await websocket.send_text(f"\r\n[arche] Failed to start terminal: {e}\r\n")
             await websocket.close()
             return
+        
+        # Track this process if track_id is provided
+        if track_id:
+            if track_id not in self.active_procs_by_track:
+                self.active_procs_by_track[track_id] = []
+            self.active_procs_by_track[track_id].append(proc)
 
         # Source arche into the shell path
         arche_dir = str(Path(__file__).parent.parent)
@@ -109,11 +119,34 @@ class TerminalManager:
         finally:
             if proc.isalive():
                 proc.terminate()
+            # Clean up tracking
+            if track_id and track_id in self.active_procs_by_track:
+                try:
+                    self.active_procs_by_track[track_id].remove(proc)
+                except ValueError:
+                    pass
             if websocket.client_state == WebSocketState.CONNECTED:
                 try:
                     await websocket.close()
                 except Exception:
                     pass
+    
+    def stop_track_processes(self, track_id: str) -> int:
+        """Stop all processes for a track. Returns count of stopped processes."""
+        if track_id not in self.active_procs_by_track:
+            return 0
+        
+        count = 0
+        procs = self.active_procs_by_track.get(track_id, [])
+        for proc in procs:
+            try:
+                if proc.isalive():
+                    proc.terminate()
+                    count += 1
+            except Exception:
+                pass
+        self.active_procs_by_track[track_id] = []
+        return count
 
 
 def _read_pty_data(proc) -> bytes | None:

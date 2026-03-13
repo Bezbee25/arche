@@ -245,7 +245,7 @@ def _hardcoded_resolved(cli: str, model: str) -> dict:
     if cli in ("copilot", "gh"):
         return {
             "binary": "copilot", "id": model,
-            "batch_args": ["-p"],
+            "batch_args": ["-p", "--allow-all"],
             "interactive_args": [],
             "model_flag": "--model", "system_flag": "", "tools_flag": "",
         }

@@ -383,11 +383,15 @@ function renderTasks(plan) {
     ? `<button class="task-action-btn btn-deselect-all" onclick="clearBulkSelection()">✕ Deselect All</button>`
     : `<button class="task-action-btn btn-select-all" onclick="selectAllTasks('${planId}')">☑ Select All</button>`;
 
-  // Run button label shows "Run N" for bulk or "Run" for single
+  // Run/Stop button logic
   const runLabel = bulkCount > 0 ? `⇒ Run ${bulkCount}` : '▶ Run';
   const runTitle = bulkCount > 0
     ? `Execute ${bulkCount} selected task${bulkCount > 1 ? 's' : ''} in sequence`
     : isActive ? 'Run selected task' : 'Only available on active track';
+  
+  const runStopButton = state.outputRunning
+    ? `<button class="task-action-btn btn-stop" title="Stop current run" onclick="uiStopRun()" style="background-color: #ff6b6b; color: white;">⏹ Stop</button>`
+    : `<button class="task-action-btn btn-run" title="${runTitle}"${disLlm} onclick="uiRunTask()">${runLabel}</button>`;
 
   const _savedAutoDone = $id('action-auto-done')?.checked ?? true;
   const _savedScroll = pane.querySelector('.tasks-scroll')?.scrollTop || 0;
@@ -400,7 +404,7 @@ function renderTasks(plan) {
         <div class="tasks-actions-row">
           <button class="task-action-btn btn-add" title="Add task" onclick="openAddTaskModal('${planId}')">+ Add task</button>
           <button class="task-action-btn btn-edit" title="Edit"${dis} onclick="uiEditTask()">✎ Edit</button>
-          <button class="task-action-btn btn-run" title="${runTitle}"${disLlm} onclick="uiRunTask()">${runLabel}</button>
+          ${runStopButton}
           <button class="task-action-btn btn-review" title="${isActive ? 'Review' : 'Only available on active track'}"${disLlm} onclick="uiReviewTask()">⊙ Review</button>
           <label class="auto-done-label" title="Mark task as done when run completes">
             <input type="checkbox" id="action-auto-done" checked>
@@ -515,17 +519,21 @@ function renderTasksWithPhases(plan, phases) {
     ? `<button class="task-action-btn btn-deselect-all" onclick="clearBulkSelection()">✕ Deselect All</button>`
     : `<button class="task-action-btn btn-select-all" onclick="selectAllTasks('${planId}')">☑ Select All</button>`;
 
-  // Run button label shows "Run N" for bulk or "Run" for single
+  // Run/Stop button logic
   const runLabel = bulkCount > 0 ? `⇒ Run ${bulkCount}` : '▶ Run';
   const runTitle = bulkCount > 0
     ? `Execute ${bulkCount} selected task${bulkCount > 1 ? 's' : ''} in sequence`
     : isActive ? 'Run selected task' : 'Only available on active track';
+  
+  const runStopBtn = state.outputRunning
+    ? `<button class="task-action-btn btn-stop" title="Stop current run" onclick="uiStopRun()" style="background-color: #ff6b6b; color: white;">⏹ Stop</button>`
+    : `<button class="task-action-btn btn-run" title="${runTitle}"${disLlm} onclick="uiRunTask()">${runLabel}</button>`;
 
   const actionsRow = `
     <button class="task-action-btn btn-add" title="Add phase" onclick="openNewPhaseModal('${planId}')">+ Add Phase</button>
     <button class="task-action-btn btn-add" title="Add task" onclick="openAddTaskModal('${planId}')">+ Add task</button>
     <button class="task-action-btn btn-edit" title="Edit"${dis} onclick="uiEditTask()">✎ Edit</button>
-    <button class="task-action-btn btn-run" title="${runTitle}"${disLlm} onclick="uiRunTask()">${runLabel}</button>
+    ${runStopBtn}
     <button class="task-action-btn btn-review" title="${isActive ? 'Review' : 'Only available on active track'}"${disLlm} onclick="uiReviewTask()">⊙ Review</button>
     <label class="auto-done-label" title="Mark task as done when run completes">
       <input type="checkbox" id="action-auto-done" checked>
@@ -929,6 +937,22 @@ function uiRunTask() {
   }
 }
 
+async function uiStopRun() {
+  if (!state.selectedPlanId) return;
+  try {
+    const resp = await fetch(`/api/tracks/${state.selectedPlanId}/stop-run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    const data = await resp.json();
+    console.log('[uiStopRun] Stopped:', data);
+    state.outputRunning = false;
+    refresh();
+  } catch (err) {
+    console.error('[uiStopRun] Error:', err);
+  }
+}
+
 async function uiSelectTask() {
   const t = _getUiTask();
   if (!t || t.status === 'DONE') return;
@@ -1279,6 +1303,7 @@ function runBulkTasks(trackId, taskIds, comment = '', autoDone = true) {
               if (data.startsWith('__BULK_DONE__')) {
                 state.outputRunning = false;
                 state._outputDone = true;
+                state.bulkSelectedTaskIds = [];
                 bulkTerminal.term.write('\r\n✓ Bulk execution complete\r\n');
                 refresh();
                 return;

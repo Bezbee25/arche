@@ -6,6 +6,17 @@ Most LLM CLIs (`claude`, `gemini`…) start fresh every time — no memory of pa
 
 ---
 
+## What arche does
+
+- **Persistent context**: Every task sees the full history of previous work
+- **Multi-track support**: Pause a feature to fix a bug, then resume with full context restored
+- **Architecture memory**: Auto-growing cross-track knowledge that survives task completion
+- **Task automation**: Spec Q&A + LLM task decomposition in one command
+- **Web UI**: Real-time monitoring and command execution via embedded terminal
+- **Model routing**: Intelligently routes to different LLM models based on task phase (spec, plan, dev, debug, doc)
+
+---
+
 ## How it works
 
 ```
@@ -19,7 +30,7 @@ arche track new "feat: JWT auth"
 
 arche task run
   └── reads  spec.md + archi.md (global) + memory.md (cross-track) + archi.md (track) + done tasks + session log
-  └── calls  claude / gemini with the full context
+  └── calls  claude / gemini with the full context via Router
   └── writes architecture decisions → tracks/{id}/archi.md AND memory.md
   └── logs   output → sessions/{date}.md
 
@@ -502,6 +513,146 @@ Opens at `http://localhost:7331`. Three areas:
 
 ---
 
+## Architecture
+
+arche is modular and organized into three main layers: **CLI**, **Core Engine**, and **Web Interface**. All components communicate through plain text storage in `.arche-storage/`.
+
+### Layer 1: CLI (`arche.py`)
+
+**Entry point**: `arche.py` using the **Typer** framework. Implements command groups:
+- `arche` — global status (shows active track + tasks)
+- `track` — create, list, switch, mark done
+- `task` — run, done, block, add, list, switch
+- `spec` — Q&A, refine, show
+- `memory` — view/clear cross-track memory
+- Ad-hoc: `dev`, `debug`, `doc`, `log`, `scan`, `init`
+
+Each command validates project state and delegates to **Core** functions.
+
+### Layer 2: Core Engine
+
+The orchestration logic lives in `core/`:
+
+#### **`track_manager.py`** — Track lifecycle
+- CRUD: `new_track()`, `get_track()`, `list_tracks()`, `switch_track()`, `mark_track_done()`
+- Persistence: loads/saves `project.yaml`, `current.yaml`, and track metadata
+- Slugifies track names, generates UUIDs, manages track status (ACTIVE, PAUSED, DONE)
+- Backward-compatible aliases: `plan_manager.py` exports these as `*_plan()` functions
+
+#### **`task_engine.py`** — Task queue
+- CRUD: `add_task()`, `load_tasks()`, `save_tasks()`, `start_task()`, `complete_task()`
+- Status tracking: TODO, IN_PROGRESS, DONE, BLOCKED
+- Persists to `tracks/{id}/tasks.yaml`
+- Supports per-task notes and phase filtering
+
+#### **`context.py`** — Context builder
+- **`build_task_prompt()`** — assembles the complete prompt for a task by stacking 7 context layers:
+  1. Track spec
+  2. Global architecture (from scanner)
+  3. Cross-track memory (from previous tasks)
+  4. Track-specific architecture
+  5. Completed tasks (with notes)
+  6. Pending tasks
+  7. Session log (recent entries)
+- **`append_archi()`** — adds architecture notes to both track-local and global memory after LLM runs
+
+#### **`scanner.py`** — Project analysis
+- **`arche scan`**: reads source tree, filters (ignore `.git`, `node_modules`, etc.), calls LLM to generate `archi.md`
+- Maintains `GLOBAL_ARCHI_PATH` (static project blueprint) and `GLOBAL_MEMORY_PATH` (auto-growing cross-track knowledge)
+
+#### **`router.py`** — LLM dispatch
+- **`call_llm()`** — routes prompts to the right CLI (claude or gemini) with the right model
+- **Phase-based routing**: each phase (spec, plan, dev, debug, doc) is assigned a default model
+- **Tool grants**: phase determines which tools (Read, Write, Bash) are available to Claude Code
+- **ModelRegistry**: reads from `.arche-storage/model_registry.yaml` (if present) to support custom model setups
+- Falls back to hardcoded defaults if registry unavailable
+
+#### **`session_logger.py`** — Session journaling
+- Logs all LLM calls to `tracks/{id}/sessions/{date}.md`
+- Persists conversation history for audit and context retrieval
+
+#### **`status.py`** — Display formatting
+- Rich table rendering of tracks, tasks, and progress
+- Shows status badges, progress bars, and summaries
+
+### Layer 3: Agents (`agents/`)
+
+**Specialized workers** that build prompts and call the LLM:
+
+- **`analyst.py`** (spec qa) — Q&A interviewer. Asks clarifying questions, refines spec.
+- **`planner.py`** (track plan) — Task decomposer. Reads spec, generates task list.
+- **`developer.py`** (task run) — Code generation. Executes current task with full context.
+- **`debugger.py`** (debug) — Error analyzer. Analyzes stack traces and suggests fixes.
+- **`documenter.py`** (doc) — Doc generator. Generates markdown docs (uses Gemini for large context).
+- **`reviewer.py`** (review) — Code reviewer. Lightweight feedback on changes.
+
+All agents:
+1. Build a prompt using `context.build_task_prompt()` + phase-specific instructions
+2. Call `router.call_llm()` to delegate to the appropriate LLM
+3. Extract **architecture notes** from the output (optional "Architecture notes:" section)
+4. Call `context.append_archi()` to persist notes to both track and global memory
+5. Log the session
+
+### Layer 4: Web Interface (`web/`)
+
+**`server.py`** — FastAPI application:
+- REST endpoints: `/api/tracks`, `/api/tasks`, `/api/sessions`
+- Real-time: WebSocket at `/api/terminal` for embedded xterm
+- Static frontend: served from `web/static/`
+- Terminal emulation: `ptyprocess` spawns subprocess pseudo-terminals, bridges to WebSocket
+
+**`ws_terminal.py`** — Terminal manager:
+- Handles multiple terminal tabs (indexed by UUID)
+- Bridges pty I/O to WebSocket messages
+
+### Data Flow: `arche task run`
+
+```
+1. CLI: "arche task run"
+2. arche.py calls developer.run(track_id, instruction)
+3. developer.py:
+   a. Calls context.build_task_prompt() → 7-layer prompt
+   b. Calls router.call_llm(prompt, phase="dev") → spawns CLI subprocess
+   c. Streams output to console (rich.Console)
+   d. Extracts architecture notes from output
+4. context.append_archi(archi_notes)
+   a. Appends to tracks/{id}/archi.md (track-local)
+   b. Appends to .arche-storage/memory.md (global, with track attribution)
+5. session_logger.log() records output and notes
+6. CLI exits, next `task run` has richer context
+```
+
+### Storage Schema
+
+```
+.arche-storage/
+├── project.yaml              ← project config (name, stack, model choices)
+├── model_registry.yaml       ← (optional) custom LLM model routing
+├── current.yaml              ← pointer to active track ID
+├── archi.md                  ← global project blueprint (static)
+├── memory.md                 ← auto-growing cross-track knowledge
+└── tracks/
+    └── {track-id}/
+        ├── meta.yaml         ← track name, status (ACTIVE/PAUSED/DONE), phase, dates
+        ├── spec.md           ← goal and requirements (written by analyst)
+        ├── archi.md          ← track-specific architecture notes (auto-appended after each task)
+        ├── tasks.yaml        ← tasks with IDs, statuses, and notes
+        └── sessions/
+            └── {YYYY-MM-DD}.md ← session log with all LLM outputs
+```
+
+All files are plain text — readable, auditable, and committable.
+
+### Design Principles
+
+1. **Context accumulation**: Every task leaves traces (archi notes) for the next task.
+2. **No LLM library**: arche invokes Claude Code or Gemini CLIs directly via subprocess. Full tool grants (Read, Write, Bash) are available to Claude Code in dev/debug phases.
+3. **Plain text state**: No databases. All config and memory is version-controllable.
+4. **Fallback mode**: If a model is unavailable, arche falls back to defaults or manual overrides.
+5. **Multi-model routing**: Different phases use different models to optimize cost/speed/quality.
+
+---
+
 ## FAQ
 
 **Where do I run `arche init`?**
@@ -524,3 +675,125 @@ Yes: `arche task add "new task title"`. Tasks are appended to the list.
 
 **Can I skip the Q&A and write the spec myself?**
 Yes: `arche track new "..." --skip-analyst`, then edit `.arche-storage/tracks/{id}/spec.md` directly, then `arche track plan`.
+
+---
+
+## Contributing & Development
+
+### Setting up for local development
+
+```bash
+git clone <repo-url>
+cd arche
+make install              # creates .venv and installs in editable mode
+source .venv/bin/activate
+```
+
+### Running tests and checks
+
+```bash
+make check                # validates Python syntax across all modules
+```
+
+### Project structure for developers
+
+- **`arche.py`** — CLI entry point (Typer commands)
+- **`core/`** — Orchestration logic (track, task, context, LLM routing)
+- **`agents/`** — Specialized LLM workers (analyst, developer, debugger, etc.)
+- **`web/`** — FastAPI server + WebSocket terminal
+- **`.arche-storage/`** — Example/fixture data for manual testing
+- **`Makefile`** — Installation, venv, syntax checking
+
+### Key concepts for contributors
+
+1. **Track = unit of work**: Each track has its own spec, tasks, and architecture notes.
+2. **Context layers**: Every task prompt is built from 7 stacked layers (see `context.py`).
+3. **Architecture notes**: LLM outputs are scanned for an "Architecture notes:" section. If found, they're persisted to both track-local and global memory.
+4. **No persistent state beyond `.arche-storage/`**: No databases or caches. All state is committed to `.arche-storage/`.
+5. **Plain CLI invocation**: arche does NOT import LLM libraries. It spawns `claude` or `gemini` CLIs as subprocesses.
+
+### Adding a new agent
+
+1. Create `agents/my_agent.py` with a `run(track_id, track_meta, instruction: str) -> str` function.
+2. Use `context.build_task_prompt()` to assemble the context.
+3. Call `router.call_llm(prompt, phase="...", track_meta=track_meta)` to invoke the LLM.
+4. Extract and persist architecture notes:
+   ```python
+   from core.context import extract_archi_notes, append_archi
+   archi_notes = extract_archi_notes(result)
+   if archi_notes:
+       append_archi(track_id, archi_notes)
+   ```
+5. Log the session: `session_logger.log(track_id, description, phase)`
+6. Wire the command into `arche.py` using Typer.
+
+### Modifying the context builder
+
+If you want to change how context is assembled, edit `context.py:build_task_prompt()`. The function returns a markdown string with 7 sections:
+1. Project info
+2. Track spec
+3. Global architecture
+4. Global memory (cross-track)
+5. Track architecture
+6. Completed tasks
+7. Pending tasks
+8. Session log
+
+You can insert additional sections or reorder as needed.
+
+---
+
+## Troubleshooting
+
+### "No active track" when running `arche task run`
+
+Create a track first:
+```bash
+arche track new "feat: my feature"
+```
+
+### LLM CLI not found
+
+Make sure your LLM CLI (e.g., `claude`) is installed and in your `PATH`:
+```bash
+which claude     # should return the path to the CLI
+claude --help    # should show help text
+```
+
+If not installed:
+- Claude Code: [docs.anthropic.com](https://docs.anthropic.com/en/docs/claude-code)
+- Gemini CLI: [github.com/google-gemini/gemini-cli](https://github.com/google-gemini/gemini-cli)
+
+### Web UI won't start
+
+Check if port 7331 is in use:
+```bash
+lsof -i :7331    # list processes using port 7331
+arche web --port 8000  # use a different port
+```
+
+### Large context truncation
+
+If your prompt gets truncated, arche prioritizes layers in this order:
+1. Current task (never truncated)
+2. Spec
+3. Global architecture
+4. Global memory (recent)
+5. Track architecture
+6. Completed tasks (oldest first)
+
+Reduce context by cleaning up old session logs or archiving completed tracks.
+
+### Restore a paused track
+
+```bash
+arche track list     # see all tracks
+arche track switch <id>  # switch to paused track
+arche task run       # resumes at the last task
+```
+
+---
+
+## License
+
+MIT — see LICENSE file for details.
