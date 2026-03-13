@@ -113,11 +113,10 @@ tools:
     default_model: devstral
 
   copilot:
-    binary: gh
-    description: "GitHub Copilot via gh CLI"
-    # gh copilot suggest reads from stdin; -t shell = shell script target
-    batch_args: ["copilot", "suggest", "-t", "shell"]
-    interactive_args: ["copilot", "suggest"]
+    binary: copilot
+    description: "GitHub Copilot CLI"
+    batch_args: []
+    interactive_args: []
     model_flag: "--model"
     system_flag: ""
     tools_flag: ""

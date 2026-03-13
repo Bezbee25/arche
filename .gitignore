@@ -3,5 +3,5 @@
 .arche-storage/
 web/__pycache__/
 .git/
-__pycache/
+__pycache__/
 core/__pycache__/
