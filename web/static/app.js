@@ -385,17 +385,17 @@ function renderTasks(plan) {
     <div class="tasks-toolbar-wrap">
       <div class="tasks-toolbar">
         <div class="filter-bar">${filterBar}</div>
-      </div>
-      <div class="tasks-actions-row">
-        <button class="task-action-btn btn-add" title="Add task" onclick="openAddTaskModal('${planId}')">+ Add task</button>
-        <button class="task-action-btn btn-edit" title="Edit"${dis} onclick="uiEditTask()">✎ Edit</button>
-        <button class="task-action-btn btn-run" title="${runTitle}"${disLlm} onclick="uiRunTask()">${runLabel}</button>
-        <button class="task-action-btn btn-review" title="${isActive ? 'Review' : 'Only available on active track'}"${disLlm} onclick="uiReviewTask()">⊙ Review</button>
-        <label class="auto-done-label" title="Mark task as done when run completes">
-          <input type="checkbox" id="action-auto-done" checked>
-          Auto-done
-        </label>
-        ${selectAllBtn}
+        <div class="tasks-actions-row">
+          <button class="task-action-btn btn-add" title="Add task" onclick="openAddTaskModal('${planId}')">+ Add task</button>
+          <button class="task-action-btn btn-edit" title="Edit"${dis} onclick="uiEditTask()">✎ Edit</button>
+          <button class="task-action-btn btn-run" title="${runTitle}"${disLlm} onclick="uiRunTask()">${runLabel}</button>
+          <button class="task-action-btn btn-review" title="${isActive ? 'Review' : 'Only available on active track'}"${disLlm} onclick="uiReviewTask()">⊙ Review</button>
+          <label class="auto-done-label" title="Mark task as done when run completes">
+            <input type="checkbox" id="action-auto-done" checked>
+            Auto-done
+          </label>
+          ${selectAllBtn}
+        </div>
       </div>
     </div>
     <div class="tasks-scroll">
@@ -645,8 +645,8 @@ function renderTasksWithPhases(plan, phases) {
     <div class="tasks-toolbar-wrap">
       <div class="tasks-toolbar">
         <div class="filter-bar">${filterBar}</div>
+        <div class="tasks-actions-row">${actionsRow}</div>
       </div>
-      <div class="tasks-actions-row">${actionsRow}</div>
     </div>
     <div class="tasks-scroll"><div class="phase-list">${phaseSections}</div></div>`;
   if (_savedScroll) pane.querySelector('.tasks-scroll').scrollTop = _savedScroll;
