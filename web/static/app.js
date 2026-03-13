@@ -1747,8 +1747,6 @@ function setupEventListeners() {
   $id('modal-phase-name').addEventListener('keydown', (e) => { if (e.key === 'Enter') confirmNewPhase(); if (e.key === 'Escape') closePhaseModal(); });
 
   // Refresh button
-  $id('btn-web-refresh').addEventListener('click', refresh);
-
   // Settings cog dropdown
   $id('btn-settings-cog').addEventListener('click', (e) => {
     e.stopPropagation();
@@ -1760,7 +1758,7 @@ function setupEventListeners() {
   $id('drop-archi').addEventListener('click', () => { $id('settings-dropdown').classList.add('hidden'); openArchiModal(); });
   $id('drop-memory').addEventListener('click', () => { $id('settings-dropdown').classList.add('hidden'); openMemoryModal(); });
   $id('drop-theme').addEventListener('click', () => { $id('settings-dropdown').classList.add('hidden'); openThemeModal(); });
-  $id('drop-lock').addEventListener('click', toggleLockSession);
+  $id('btn-lock').addEventListener('click', toggleLockSession);
   $id('drop-project-settings').addEventListener('click', () => { $id('settings-dropdown').classList.add('hidden'); openSettingsModal(); });
 
   // Archi modal
@@ -2601,6 +2599,14 @@ async function setupLockScreen() {
     state.sessionLocked = true;
     openLockScreenModal();
   }
+
+  updateLockButtonEmoji();
+}
+
+function updateLockButtonEmoji() {
+  const btn = $id('btn-lock');
+  if (!btn) return;
+  btn.textContent = state.sessionLocked ? '🔒' : '🔓';
 }
 
 function setupLockStorageSync() {
@@ -2613,10 +2619,12 @@ function setupLockStorageSync() {
         // Lock was activated in another tab - lock this tab too
         state.sessionLocked = true;
         openLockScreenModal();
+        updateLockButtonEmoji();
       } else if (!isNowLocked && state.sessionLocked) {
         // Lock was deactivated in another tab - unlock this tab too
         state.sessionLocked = false;
         closeLockScreenModal();
+        updateLockButtonEmoji();
       }
     }
   });
@@ -2675,6 +2683,7 @@ async function saveLockPassword(password) {
       state.sessionLocked = true;
       localStorage.setItem('isLocked', 'true');
       closeLockSetupModal();
+      updateLockButtonEmoji();
       showToast('Password set and session locked');
       return true;
     }
@@ -2691,6 +2700,7 @@ async function verifyPasswordAndUnlock(password) {
       state.sessionLocked = false;
       localStorage.setItem('isLocked', 'false');
       closeLockScreenModal();
+      updateLockButtonEmoji();
       showToast('Session unlocked');
       return true;
     } else {
