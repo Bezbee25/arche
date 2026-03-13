@@ -492,8 +492,8 @@ body {
   display: flex;
   gap: 6px;
   align-items: center;
-  padding: 4px 0 6px;
-  flex-wrap: wrap;
+  margin-left: auto;
+  flex-shrink: 0;
 }
 
 .task-action-btn {
