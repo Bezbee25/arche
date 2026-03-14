@@ -334,9 +334,13 @@ def create_app() -> FastAPI:
                             yield f"data: {line}\n\n"
                 else:
                     yield "data: ✓ Architecture scan completed\n\n"
+                
+                # Signal completion
+                yield "data: __DONE__\n\n"
                     
             except Exception as e:
                 yield f"data: ⚠ Error: {str(e)}\n\n"
+                yield "data: __DONE__\n\n"
         
         return StreamingResponse(scan_generator(), media_type="text/event-stream")
 

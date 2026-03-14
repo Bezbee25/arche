@@ -35,6 +35,7 @@ const state = {
   _autoRefreshBlocked: false, // true if user is scrolling in any section
   hasPassword: false,       // whether a password is set
   sessionLocked: false,     // whether session is currently locked
+  selectedInstructionIds: new Set(), // instructions sélectionnées (checkboxes)
 };
 
 let _termCounter = 0;
@@ -105,6 +106,23 @@ const api = {
   verifyPassword: (password) => apiFetch('/api/settings/password/verify', { method: 'POST', body: JSON.stringify({ password }) }),
   updatePassword: (password) => apiFetch('/api/settings/password', { method: 'PATCH', body: JSON.stringify({ password }) }),
   clearPassword: () => apiFetch('/api/settings/password/clear', { method: 'POST' }),
+  // Instructions
+  getInstructions: () => apiFetch('/api/instructions/list'),
+  searchInstructions: (params) => {
+    const query = new URLSearchParams(params).toString();
+    return apiFetch(`/api/instructions/search?${query}`);
+  },
+  getInstruction: (id) => apiFetch(`/api/instructions/get?id=${id}`),
+  getUserInstructions: () => apiFetch('/api/instructions/store/list'),
+  searchUserInstructions: (params) => {
+    const query = new URLSearchParams(params).toString();
+    return apiFetch(`/api/instructions/store/search?${query}`);
+  },
+  getUserInstruction: (id) => apiFetch(`/api/instructions/store/get/${id}`),
+  addUserInstruction: (instruction) => apiFetch('/api/instructions/store/add', { method: 'POST', body: JSON.stringify(instruction) }),
+  updateUserInstruction: (instruction) => apiFetch('/api/instructions/store/update', { method: 'PUT', body: JSON.stringify(instruction) }),
+  deleteUserInstruction: (id) => apiFetch(`/api/instructions/store/delete/${id}`, { method: 'DELETE' }),
+  enableUserInstruction: (id, enabled) => apiFetch(`/api/instructions/store/enable/${id}`, { method: 'POST', body: JSON.stringify({ enabled }) }),
 };
 
 // ── DOM refs ───────────────────────────────────────────────────────────────
@@ -954,21 +972,37 @@ async function loadInstructions() {
   const tags = $id('instruction-tags').value;
   
   const listContainer = $id('instruction-list');
-  listContainer.innerHTML = '<div class="loading">Loading instructions...</div>';
+  listContainer.innerHTML = '';
+  
+  // Show loading skeleton
+  for (let i = 0; i < 5; i++) {
+    const skeleton = document.createElement('div');
+    skeleton.className = 'instruction-skeleton';
+    listContainer.appendChild(skeleton);
+  }
   
   try {
-    const params = new URLSearchParams();
-    if (searchQuery) params.append('q', searchQuery);
-    if (category) params.append('category', category);
-    if (tags) params.append('tags', tags);
+    const params = {};
+    if (searchQuery) params.q = searchQuery;
+    if (category) params.category = category;
+    if (tags) params.tags = tags;
     
-    const response = await apiFetch(`/api/instructions/search?${params.toString()}`);
-    const { instructions } = await response.json();
+    const response = await api.searchInstructions(params);
+    if (!response) {
+      throw new Error('Failed to fetch instructions from server');
+    }
+    const instructions = response.instructions || [];
     
     listContainer.innerHTML = '';
     
     if (instructions.length === 0) {
-      listContainer.innerHTML = '<div class="empty-state">No instructions found</div>';
+      listContainer.innerHTML = `
+        <div class="instructions-empty-state">
+          <div class="empty-state-icon">📚</div>
+          <p class="empty-state-text">No instructions found</p>
+          <p class="empty-state-subtext">Try adjusting your search or adding new instructions</p>
+        </div>
+      `;
       return;
     }
     
@@ -981,11 +1015,18 @@ async function loadInstructions() {
       item.innerHTML = `
         <div class="instruction-header">
           <input type="checkbox" class="instruction-checkbox" data-id="${instruction.id}" />
-          <div class="instruction-name">${escHtml(instruction.name)}</div>
+          <div class="instruction-name" data-id="${instruction.id}">${escHtml(instruction.name)}</div>
           <div class="instruction-category">${escHtml(instruction.category)}</div>
         </div>
         ${tagsHtml}
         <div class="instruction-description">${escHtml(instruction.description || '')}</div>
+        <div class="instruction-content" style="display: none;">
+          <textarea class="instruction-editor" data-id="${instruction.id}">${escHtml(instruction.content || '')}</textarea>
+          <div class="instruction-editor-actions">
+            <button class="btn-save-instruction" data-id="${instruction.id}">Save</button>
+            <button class="btn-cancel-edit" data-id="${instruction.id}">Cancel</button>
+          </div>
+        </div>
       `;
       listContainer.appendChild(item);
     });
@@ -995,11 +1036,92 @@ async function loadInstructions() {
       checkbox.addEventListener('change', function() {
         const instructionId = this.dataset.id;
         const enabled = this.checked;
-        apiFetch(`/api/instructions/store/enable/${instructionId}`, {
-          method: 'POST',
-          body: JSON.stringify({ enabled }),
-          headers: { 'Content-Type': 'application/json' }
-        });
+        
+        // Update selection state
+        if (enabled) {
+          state.selectedInstructionIds.add(instructionId);
+        } else {
+          state.selectedInstructionIds.delete(instructionId);
+        }
+        
+        // Update visual feedback
+        updateInstructionSelectionFeedback();
+        
+        // Enable/disable instruction via backend
+        api.enableUserInstruction(instructionId, enabled);
+      });
+    });
+
+    // Set up instruction name click to open editor
+    document.querySelectorAll('.instruction-name').forEach(nameElement => {
+      nameElement.addEventListener('click', function() {
+        const instructionId = this.dataset.id;
+        const contentElement = this.closest('.instruction-item').querySelector('.instruction-content');
+        
+        // Toggle editor visibility
+        if (contentElement.style.display === 'none') {
+          contentElement.style.display = 'block';
+          this.classList.add('editing');
+        } else {
+          contentElement.style.display = 'none';
+          this.classList.remove('editing');
+        }
+      });
+    });
+
+    // Set up save button event listeners
+    document.querySelectorAll('.btn-save-instruction').forEach(saveButton => {
+      saveButton.addEventListener('click', async function() {
+        const instructionId = this.dataset.id;
+        const item = this.closest('.instruction-item');
+        const editor = item.querySelector('.instruction-editor');
+        const nameElement = item.querySelector('.instruction-name');
+        
+        try {
+          const instruction = await api.getUserInstruction(instructionId);
+          
+          // Update instruction content
+          instruction.content = editor.value;
+          
+          // Save to backend
+          const saveResponse = await api.updateUserInstruction(instruction);
+          
+          if (!saveResponse) {
+            throw new Error('Failed to save instruction to server');
+          }
+          
+          if (saveResponse) {
+            // Close editor
+            item.querySelector('.instruction-content').style.display = 'none';
+            nameElement.classList.remove('editing');
+            
+            // Show success feedback
+            const successMsg = document.createElement('div');
+            successMsg.className = 'instruction-save-success';
+            successMsg.textContent = 'Saved successfully!';
+            item.appendChild(successMsg);
+            
+            setTimeout(() => {
+              successMsg.remove();
+            }, 2000);
+          }
+        } catch (error) {
+          console.error('Error saving instruction:', error);
+          alert('Failed to save instruction: ' + error.message);
+        }
+      });
+    });
+
+    // Set up cancel button event listeners
+    document.querySelectorAll('.btn-cancel-edit').forEach(cancelButton => {
+      cancelButton.addEventListener('click', function() {
+        const instructionId = this.dataset.id;
+        const item = this.closest('.instruction-item');
+        const nameElement = item.querySelector('.instruction-name');
+        
+        // Close editor without saving
+        item.querySelector('.instruction-content').style.display = 'none';
+        nameElement.classList.remove('editing');
       });
     });
   } catch (error) {
@@ -2843,7 +2965,7 @@ const THEMES = {
       '--border': '#2a2a2a', '--text': '#e0e0e0', '--text-dim': '#666',
       '--text-muted': '#999', '--green': '#3fb950', '--yellow': '#d29922',
       '--red': '#f85149', '--blue': '#58a6ff', '--cyan': '#39c5cf',
-      '--purple': '#bc8cff',
+      '--purple': '#bc8cff', '--accent': '#7c6af7', '--accent-hover': '#6a5acd',
     },
     term: { background: '#0d0d0d', foreground: '#e0e0e0', cursor: '#39c5cf', selection: '#2a4a5a' },
   },
@@ -2855,7 +2977,7 @@ const THEMES = {
       '--border': '#d0d0cc', '--text': '#1a1a1a', '--text-dim': '#888',
       '--text-muted': '#555', '--green': '#1a7f37', '--yellow': '#9a6700',
       '--red': '#cf222e', '--blue': '#0550ae', '--cyan': '#1b7c83',
-      '--purple': '#7a3e9d',
+      '--purple': '#7a3e9d', '--accent': '#6f42c1', '--accent-hover': '#5a32a8',
     },
     term: { background: '#f5f5f0', foreground: '#1a1a1a', cursor: '#1b7c83', selection: '#c8e1e4' },
   },
@@ -2867,7 +2989,7 @@ const THEMES = {
       '--border': '#3d3830', '--text': '#e8e0d4', '--text-dim': '#6e6358',
       '--text-muted': '#a89880', '--green': '#6ab06a', '--yellow': '#e0945a',
       '--red': '#e06a5a', '--blue': '#7aaedd', '--cyan': '#7ac4c0',
-      '--purple': '#c4a0e0',
+      '--purple': '#c4a0e0', '--accent': '#d4a06a', '--accent-hover': '#b88a52',
     },
     term: { background: '#1e1b18', foreground: '#e8e0d4', cursor: '#e0945a', selection: '#3d3020' },
   },
@@ -2879,7 +3001,7 @@ const THEMES = {
       '--border': '#363250', '--text': '#dcd8ec', '--text-dim': '#6a6480',
       '--text-muted': '#9a94b8', '--green': '#7acc88', '--yellow': '#d4b06a',
       '--red': '#e07a88', '--blue': '#7aaae0', '--cyan': '#7ac4d4',
-      '--purple': '#c0a0f0',
+      '--purple': '#c0a0f0', '--accent': '#b8a0e8', '--accent-hover': '#9a88c8',
     },
     term: { background: '#181620', foreground: '#dcd8ec', cursor: '#c0a0f0', selection: '#362850' },
   },
@@ -2891,7 +3013,7 @@ const THEMES = {
       '--border': '#434c5e', '--text': '#eceff4', '--text-dim': '#616e88',
       '--text-muted': '#9099a8', '--green': '#a3be8c', '--yellow': '#ebcb8b',
       '--red': '#bf616a', '--blue': '#81a1c1', '--cyan': '#88c0d0',
-      '--purple': '#b48ead',
+      '--purple': '#b48ead', '--accent': '#88c0d0', '--accent-hover': '#78b0c0',
     },
     term: { background: '#242933', foreground: '#eceff4', cursor: '#88c0d0', selection: '#434c5e' },
   },
@@ -2903,7 +3025,7 @@ const THEMES = {
       '--border': '#1a5060', '--text': '#e0ddd0', '--text-dim': '#4a6070',
       '--text-muted': '#6a8090', '--green': '#859900', '--yellow': '#b58900',
       '--red': '#dc322f', '--blue': '#268bd2', '--cyan': '#2aa198',
-      '--purple': '#6c71c4',
+      '--purple': '#6c71c4', '--accent': '#268bd2', '--accent-hover': '#1a75a8',
     },
     term: { background: '#002b36', foreground: '#e0ddd0', cursor: '#2aa198', selection: '#1a4050' },
   },
