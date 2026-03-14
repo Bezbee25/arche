@@ -947,6 +947,10 @@ async function uiStopRun() {
     const data = await resp.json();
     console.log('[uiStopRun] Stopped:', data);
     state.outputRunning = false;
+    if (state.outputEventSource) {
+      state.outputEventSource.close();
+      state.outputEventSource = null;
+    }
     refresh();
   } catch (err) {
     console.error('[uiStopRun] Error:', err);
