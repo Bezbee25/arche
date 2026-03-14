@@ -42,12 +42,14 @@ from core.task_engine import (
     add_task,
     block_task,
     complete_task,
+    get_current_task,
     get_task_stats,
     load_tasks,
     select_task,
     start_task,
     switch_task,
     update_task,
+    STATUS_TODO,
 )
 from core.session_logger import get_session_log, list_sessions, log
 from web.ws_terminal import TerminalManager
@@ -207,6 +209,8 @@ _pending_terminal_inits: dict[str, str] = {}
 _active_runs: dict[str, list] = {}
 # Tracks for which a stop was requested (bulk loop guard)
 _stop_requested: set[str] = set()
+# Process IDs that were intentionally stopped via stop-run (suppress error messages)
+_intentionally_stopped: set = set()
 
 
 def create_app() -> FastAPI:
@@ -934,6 +938,11 @@ def create_app() -> FastAPI:
 
                 line_count = 0
                 while True:
+                    # Check if stop was requested during streaming
+                    if track_id in _stop_requested:
+                        print(f"[stream_task_run] Stop requested, breaking read loop")
+                        break
+
                     if cli == "claude":
                         line = await proc.stdout.readline()
                         if not line:
@@ -964,10 +973,18 @@ def create_app() -> FastAPI:
                 await proc.wait()
                 print(f"[stream_task_run] Process exited with code {proc.returncode}")
 
-                if not output_lines:
-                    yield f"data: ⚠ Subprocess exited with no output (code {proc.returncode})\n\n"
-                elif proc.returncode != 0:
-                    yield f"data: ⚠ Subprocess exited with code {proc.returncode}\n\n"
+                # Check if process was intentionally stopped via stop-run
+                was_intentional = id(proc) in _intentionally_stopped
+                if was_intentional:
+                    _intentionally_stopped.discard(id(proc))
+                    print(f"[stream_task_run] Process stopped intentionally (via stop-run)")
+
+                # Only show exit code errors if not intentionally stopped
+                if not was_intentional:
+                    if not output_lines:
+                        yield f"data: ⚠ Subprocess exited with no output (code {proc.returncode})\n\n"
+                    elif proc.returncode != 0:
+                        yield f"data: ⚠ Subprocess exited with code {proc.returncode}\n\n"
 
                 output_str = "".join(output_lines)
                 notes = extract_archi_notes(output_str)
@@ -988,6 +1005,11 @@ def create_app() -> FastAPI:
                 try:
                     if proc in _active_runs.get(track_id, []):
                         _active_runs[track_id].remove(proc)
+                except Exception:
+                    pass
+                # Clean up intentionally stopped flag
+                try:
+                    _intentionally_stopped.discard(id(proc))
                 except Exception:
                     pass
                 yield "data: __DONE__\n\n"
@@ -1195,6 +1217,11 @@ def create_app() -> FastAPI:
                             proc.stdin.close()
 
                             while True:
+                                # Check if stop was requested during streaming
+                                if track_id in _stop_requested:
+                                    print(f"[run_bulk] Stop requested in task {task_num}, breaking read loop")
+                                    break
+
                                 if cli == "claude":
                                     line = await proc.stdout.readline()
                                     if not line:
@@ -1267,13 +1294,15 @@ def create_app() -> FastAPI:
         # Stop PTY processes via TerminalManager
         pty_count = terminal_manager.stop_track_processes(track_id)
         count += pty_count
-        
+
         # Stop async subprocess processes
         if track_id in _active_runs:
             processes = _active_runs[track_id]
             for proc in processes:
                 if proc and proc.returncode is None:
                     try:
+                        # Mark as intentionally stopped before terminating
+                        _intentionally_stopped.add(id(proc))
                         proc.terminate()
                         try:
                             await asyncio.wait_for(proc.wait(), timeout=2)
@@ -1284,6 +1313,12 @@ def create_app() -> FastAPI:
                     except Exception as e:
                         print(f"[stop_run] Error terminating process: {e}")
             _active_runs[track_id] = []
+
+        # Revert IN_PROGRESS task back to TODO
+        current_task = get_current_task(track_id)
+        if current_task and current_task.get("status") == "IN_PROGRESS":
+            update_task(track_id, current_task["id"], {"status": STATUS_TODO})
+
         return {"status": "stopped", "count": count}
 
     @app.get("/api/tracks/{track_id}/run-status")
