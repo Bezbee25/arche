@@ -112,6 +112,7 @@ class BulkTaskRunRequest(BaseModel):
     task_ids: list[str]  # List of task IDs to execute in order
     comment: str = ""
     auto_done: bool = True
+    instructions: str = ""  # Comma-separated list of instruction IDs
 
 class TemplateGenerationRequest(BaseModel):
     description: str
@@ -933,8 +934,10 @@ def create_app() -> FastAPI:
         return task
 
     @app.get("/api/tracks/{track_id}/tasks/{task_id}/run")
-    async def stream_task_run(track_id: str, task_id: str, comment: str = "", auto_done: bool = True):
+    async def stream_task_run(track_id: str, task_id: str, comment: str = "", auto_done: bool = True, instructions: str = ""):
         """Switch to task then stream LLM output via SSE."""
+        # Parse selected instruction IDs from comma-separated string
+        selected_instruction_ids = [i.strip() for i in instructions.split(",") if i.strip()] if instructions else []
         from core.context import build_task_prompt, extract_archi_notes, append_archi
         from core.router import (
             _build_command,
@@ -965,7 +968,11 @@ def create_app() -> FastAPI:
         cmd = _build_command(cli, model, None, tools)
         if cli == "claude":
             cmd += ["--output-format", "stream-json", "--verbose"]
-        prompt = build_task_prompt(track_id, plan, comment=comment)
+        prompt = build_task_prompt(track_id, plan, comment=comment, selected_instruction_ids=selected_instruction_ids)
+
+        if selected_instruction_ids:
+            from core.session_logger import log_instructions_used
+            log_instructions_used(track_id, selected_instruction_ids)
 
         async def generate():
             output_lines: list[str] = []
@@ -1076,7 +1083,8 @@ def create_app() -> FastAPI:
 
     @app.get("/api/tracks/{track_id}/tasks/{task_id}/prepare-run")
     async def prepare_task_run(
-        track_id: str, task_id: str, comment: str = "", auto_done: bool = True
+        track_id: str, task_id: str, comment: str = "", auto_done: bool = True, 
+        instructions: str = ""
     ):
         """Prepare a task for interactive PTY execution.
 
@@ -1084,6 +1092,8 @@ def create_app() -> FastAPI:
         a one-time token that the /ws/terminal WebSocket will use to inject
         the command into a real PTY shell.
         """
+        # Parse selected instruction IDs from comma-separated string
+        selected_instruction_ids = [i.strip() for i in instructions.split(",") if i.strip()] if instructions else []
         from core.context import build_task_prompt
         from core.router import (
             _build_command,
@@ -1114,7 +1124,11 @@ def create_app() -> FastAPI:
 
         tools = get_tools_for_phase(phase, plan)
         cmd = _build_command(cli, model, None, tools)
-        prompt = build_task_prompt(track_id, plan, comment=comment)
+        prompt = build_task_prompt(track_id, plan, comment=comment, selected_instruction_ids=selected_instruction_ids)
+
+        if selected_instruction_ids:
+            from core.session_logger import log_instructions_used
+            log_instructions_used(track_id, selected_instruction_ids)
 
         # Use storage/tracks/{track_id}/tmp/ to stay within the project directory
         from core.track_manager import TRACKS_DIR
@@ -1249,7 +1263,13 @@ def create_app() -> FastAPI:
                     start_task(track_id, task_id)
 
                     task = task_map[task_id]
-                    prompt = build_task_prompt(track_id, plan, comment=req.comment)
+                    # Parse selected instruction IDs from comma-separated string
+                    selected_instruction_ids = [i.strip() for i in req.instructions.split(",") if i.strip()] if req.instructions else []
+                    prompt = build_task_prompt(track_id, plan, comment=req.comment, selected_instruction_ids=selected_instruction_ids)
+
+                    if selected_instruction_ids:
+                        from core.session_logger import log_instructions_used
+                        log_instructions_used(track_id, selected_instruction_ids)
 
                     yield f"data: __TASK_START__ {task_num}/{len(valid_task_ids)} {task['title']}\n\n"
 
@@ -1662,115 +1682,102 @@ def create_app() -> FastAPI:
     # ── Instructions API ────────────────────────────────────────────────
 
     INSTRUCTIONS_DIR = Path(__file__).parent.parent / "instructions"
+    LOCAL_INSTRUCTIONS_DIR = Path(".arche-storage/instructions")
+
+    def _parse_md_instruction(instruction_file: Path, category: str, source: str = "global") -> dict:
+        """Parse a .md instruction file and return its metadata dict."""
+        content = instruction_file.read_text(encoding="utf-8")
+        name = instruction_file.stem
+        description = ""
+        file_tags = []
+        for line in content.split("\n"):
+            if line.startswith("# ") and name == instruction_file.stem:
+                name = line[2:].strip()
+            elif line.startswith("tags:") and not file_tags:
+                file_tags = [t.strip() for t in line.replace("tags:", "").split(",")]
+            elif line.startswith("description:") and not description:
+                description = line.replace("description:", "").strip()
+        return {
+            "id": instruction_file.stem,
+            "name": name,
+            "category": category,
+            "description": description,
+            "tags": file_tags,
+            "source": source,
+        }
 
     @app.get("/api/instructions/list")
     def list_instructions():
-        """List all available instruction templates."""
-        if not INSTRUCTIONS_DIR.exists():
-            return {"instructions": []}
-
+        """List all available instruction templates (global built-ins + local project)."""
         instructions = []
-        for category_dir in sorted(INSTRUCTIONS_DIR.iterdir()):
-            if not category_dir.is_dir():
-                continue
-            for instruction_file in sorted(category_dir.glob("*.md")):
+
+        # Global built-in instructions (from arche package)
+        if INSTRUCTIONS_DIR.exists():
+            for category_dir in sorted(INSTRUCTIONS_DIR.iterdir()):
+                if not category_dir.is_dir():
+                    continue
+                for instruction_file in sorted(category_dir.glob("*.md")):
+                    try:
+                        instructions.append(_parse_md_instruction(instruction_file, category_dir.name, "global"))
+                    except Exception:
+                        continue
+
+        # Local project instructions (.arche-storage/instructions/*.md)
+        if LOCAL_INSTRUCTIONS_DIR.exists():
+            for instruction_file in sorted(LOCAL_INSTRUCTIONS_DIR.glob("*.md")):
                 try:
-                    content = instruction_file.read_text(encoding="utf-8")
-                    # Extract metadata from file content
-                    name = instruction_file.stem
-                    description = ""
-                    file_tags = []
-                    for line in content.split("\n"):
-                        if line.startswith("# "):
-                            name = line[2:].strip()
-                        elif line.startswith("tags:"):
-                            file_tags = [t.strip() for t in line.replace("tags:", "").split(",")]
-                    instructions.append({
-                        "id": instruction_file.stem,
-                        "name": name,
-                        "category": category_dir.name,
-                        "path": str(instruction_file.relative_to(INSTRUCTIONS_DIR)),
-                        "description": description,
-                        "tags": file_tags,
-                    })
+                    instructions.append(_parse_md_instruction(instruction_file, "local", "local"))
                 except Exception:
                     continue
+
         return {"instructions": instructions}
 
     @app.get("/api/instructions/search")
     def search_instructions(q: str = None, category: str = None, tags: str = None):
         """Search instructions by query, category, and/or tags."""
-        if not INSTRUCTIONS_DIR.exists():
-            return {"instructions": []}
+        all_instructions = list_instructions()["instructions"]
 
-        instructions = []
-        for category_dir in sorted(INSTRUCTIONS_DIR.iterdir()):
-            if not category_dir.is_dir():
+        results = []
+        for inst in all_instructions:
+            if category and inst["category"] != category:
                 continue
-            if category and category_dir.name != category:
-                continue
-            for instruction_file in sorted(category_dir.glob("*.md")):
-                try:
-                    content = instruction_file.read_text(encoding="utf-8")
-                    name = instruction_file.stem
-                    description = ""
-                    file_tags = []
-                    for line in content.split("\n"):
-                        if line.startswith("# "):
-                            name = line[2:].strip()
-                        elif line.startswith("tags:"):
-                            file_tags = [t.strip() for t in line.replace("tags:", "").split(",")]
-                        elif line.startswith("description:") and not description:
-                            description = line.replace("description:", "").strip()
-                    
-                    # Filter by tags - match if any of the provided tags are in file_tags
-                    if tags:
-                        search_tags = [t.strip().lower() for t in tags.split(",")]
-                        if not any(tag in [t.lower() for t in file_tags] for tag in search_tags):
-                            continue
-                    
-                    # Filter by query - search in name, description, and tags
-                    if q:
-                        query_lower = q.lower()
-                        name_match = query_lower in name.lower()
-                        desc_match = query_lower in description.lower()
-                        tags_match = any(query_lower in tag.lower() for tag in file_tags)
-                        if not (name_match or desc_match or tags_match):
-                            continue
-                    
-                    instructions.append({
-                        "id": instruction_file.stem,
-                        "name": name,
-                        "category": category_dir.name,
-                        "path": str(instruction_file.relative_to(INSTRUCTIONS_DIR)),
-                        "description": description,
-                        "tags": file_tags,
-                    })
-                except Exception:
+            if tags:
+                search_tags = [t.strip().lower() for t in tags.split(",")]
+                if not any(tag in [t.lower() for t in inst["tags"]] for tag in search_tags):
                     continue
-        return {"instructions": instructions}
+            if q:
+                query_lower = q.lower()
+                if not (query_lower in inst["name"].lower()
+                        or query_lower in inst["description"].lower()
+                        or any(query_lower in tag.lower() for tag in inst["tags"])):
+                    continue
+            results.append(inst)
+        return {"instructions": results}
 
     @app.get("/api/instructions/get")
     def get_instruction(id: str, category: str = None):
         """Get a specific instruction by ID and optional category."""
-        if not INSTRUCTIONS_DIR.exists():
-            raise HTTPException(status_code=404, detail="Instructions directory not found")
-
-        # Try to find the instruction
         instruction_file = None
-        if category:
-            category_dir = INSTRUCTIONS_DIR / category
-            if category_dir.exists() and category_dir.is_dir():
-                instruction_file = category_dir / f"{id}.md"
-        else:
-            # Search across all categories
-            for category_dir in INSTRUCTIONS_DIR.iterdir():
-                if not category_dir.is_dir():
-                    continue
-                file_path = category_dir / f"{id}.md"
-                if file_path.exists():
-                    instruction_file = file_path
-                    break
+
+        # 1. Local project instructions (.arche-storage/instructions/<id>.md)
+        local_file = LOCAL_INSTRUCTIONS_DIR / f"{id}.md"
+        if local_file.exists():
+            instruction_file = local_file
+
+        # 2. Global built-in instructions
+        if not instruction_file and INSTRUCTIONS_DIR.exists():
+            if category:
+                candidate = INSTRUCTIONS_DIR / category / f"{id}.md"
+                if candidate.exists():
+                    instruction_file = candidate
+            else:
+                for category_dir in INSTRUCTIONS_DIR.iterdir():
+                    if not category_dir.is_dir():
+                        continue
+                    file_path = category_dir / f"{id}.md"
+                    if file_path.exists():
+                        instruction_file = file_path
+                        break
 
         if not instruction_file or not instruction_file.exists():
             raise HTTPException(status_code=404, detail="Instruction not found")

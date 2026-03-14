@@ -1,9 +1,9 @@
-/* arche web UI — vanilla JS */
+/* arche web UI - vanilla JS */
 'use strict';
 
 const API = '';  // Same origin
 
-// ── State ──────────────────────────────────────────────────────────────────
+// -- State -----------------------------------------------------------------
 const state = {
   plans: [],
   selectedPlanId: null,
@@ -21,8 +21,8 @@ const state = {
   editingTask: null,
   doneTask: null,
   blockTask: null,
-  uiSelectedTaskId: null,   // tâche cliquée dans l'UI (pour les actions)
-  bulkSelectedTaskIds: [],  // tâches sélectionnées (checkboxes) — preserves order
+  uiSelectedTaskId: null,   // tache cliquee dans l'UI (pour les actions)
+  bulkSelectedTaskIds: [],  // taches selectionnees (checkboxes) - preserves order
   taskFilter: 'all',        // 'all' | 'TODO' | 'SELECTED' | 'IN_PROGRESS' | 'DONE'
   runTask: null,            // { trackId, taskId } | null
   interview: null,          // { planId, description, qa, currentQuestion } | null
@@ -35,12 +35,12 @@ const state = {
   _autoRefreshBlocked: false, // true if user is scrolling in any section
   hasPassword: false,       // whether a password is set
   sessionLocked: false,     // whether session is currently locked
-  selectedInstructionIds: new Set(), // instructions sélectionnées (checkboxes)
+  selectedInstructionIds: new Set(), // instructions selectionnees (checkboxes)
 };
 
 let _termCounter = 0;
 
-// ── Utilities ─────────────────────────────────────────────────────────────
+// -- Utilities -------------------------------------------------------------
 function debounce(func, wait) {
   let timeout;
   return function executedFunction(...args) {
@@ -53,7 +53,7 @@ function debounce(func, wait) {
   };
 }
 
-// ── API helpers ────────────────────────────────────────────────────────────
+// -- API helpers ------------------------------------------------------------
 async function apiFetch(path, opts = {}) {
   try {
     const res = await fetch(API + path, {
@@ -125,12 +125,12 @@ const api = {
   enableUserInstruction: (id, enabled) => apiFetch(`/api/instructions/store/enable/${id}`, { method: 'POST', body: JSON.stringify({ enabled }) }),
 };
 
-// ── DOM refs ───────────────────────────────────────────────────────────────
+// -- DOM refs ---------------------------------------------------------------
 const $ = (sel) => document.querySelector(sel);
 const $id = (id) => document.getElementById(id);
 const escapeHtml = (s) => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 
-// ── Scroll detection helpers ────────────────────────────────────────────────
+// -- Scroll detection helpers ------------------------------------------------
 function setupScrollDetection() {
   // Detect user scrolling in spec and tasks tabs (output is now in terminals section)
   ['tab-spec', 'tasks-scroll'].forEach(id => {
@@ -156,7 +156,7 @@ function setupScrollDetection() {
 }
 
 
-// ── Init ───────────────────────────────────────────────────────────────────
+// -- Init -------------------------------------------------------------------
 async function init() {
   setupResizableConsole();
   setupEventListeners();  // registers theme listeners synchronously
@@ -200,7 +200,7 @@ async function refresh() {
       state.selectedPlanId = activePlan.id;
     }
 
-    // Re-render le panel uniquement si une tâche tourne (évite le sursaut d'affichage)
+    // Re-render le panel uniquement si une tache tourne (evite le sursaut d'affichage)
     if (!state.outputRunning) return;
 
     // Skip panel re-render if user is scrolling or has a dropdown open
@@ -222,7 +222,7 @@ function startPolling() {
   state.pollInterval = setInterval(refresh, 3000);
 }
 
-// ── Sidebar ────────────────────────────────────────────────────────────────
+// -- Sidebar ----------------------------------------------------------------
 function renderSidebar(plans) {
   const container = $id('plan-list');
   if (plans.length === 0) {
@@ -264,12 +264,12 @@ function renderSidebar(plans) {
   });
 }
 
-// ── Panel ──────────────────────────────────────────────────────────────────
+// -- Panel ------------------------------------------------------------------
 async function renderPanelFor(planId) {
   const plan = await api.getTrack(planId);
   if (!plan) return;
 
-  // Sauvegarde l'état éditeur du track précédent, restaure celui du nouveau
+  // Sauvegarde l'etat editeur du track precedent, restaure celui du nouveau
   if (state._lastPlan && state._lastPlan.id !== planId) {
     _saveEditorStateForTrack(state._lastPlan.id);
     _restoreEditorStateForTrack(planId);
@@ -333,7 +333,7 @@ async function renderTabContent(plan, tab) {
   }
 }
 
-// ── Tasks tab ──────────────────────────────────────────────────────────────
+// -- Tasks tab --------------------------------------------------------------
 const TASK_ICONS = { DONE: '✓', IN_PROGRESS: '▶', TODO: '·', BLOCKED: '✗' };
 const TASK_LABELS = { IN_PROGRESS: 'IN PROGRESS', BLOCKED: 'BLOCKED' };
 
@@ -429,7 +429,7 @@ function renderTasks(plan) {
     `<button class="filter-btn ${state.taskFilter === val ? 'active' : ''}" data-filter="${val}">${label} <span class="filter-count">${count}</span></button>`
   ).join('');
 
-  // Action toolbar — active based on UI selected task
+  // Action toolbar - active based on UI selected task
   const isActive = plan.status === 'ACTIVE';
   const noSel = !uiSel;
   const dis = (noSel || !isActive) ? ' disabled' : '';
@@ -514,7 +514,7 @@ function renderTasks(plan) {
     });
   });
 
-  // Inline status selects — prevent row click propagation, handle status change
+  // Inline status selects - prevent row click propagation, handle status change
   pane.querySelectorAll('.task-inline-status').forEach(sel => {
     sel.addEventListener('click', e => e.stopPropagation());
     sel.addEventListener('change', async e => {
@@ -524,7 +524,7 @@ function renderTasks(plan) {
     });
   });
 
-  // Inline type selects — save task type directly
+  // Inline type selects - save task type directly
   pane.querySelectorAll('.task-inline-type').forEach(sel => {
     sel.addEventListener('click', e => e.stopPropagation());
     sel.addEventListener('change', async e => {
@@ -535,7 +535,7 @@ function renderTasks(plan) {
   });
 }
 
-// ── Bulk selection helpers ──────────────────────────────────────────────────
+// -- Bulk selection helpers --------------------------------------------------
 function selectAllTasks(planId) {
   const plan = state._lastPlan;
   if (!plan) return;
@@ -556,7 +556,7 @@ function clearBulkSelection() {
   if (plan) renderTasks(plan);
 }
 
-// ── Phase-grouped tasks rendering ────────────────────────────────────────────
+// -- Phase-grouped tasks rendering --------------------------------------------
 function renderTasksWithPhases(plan, phases) {
   const planId = plan.id;
   const pane = $id('tab-tasks');
@@ -766,7 +766,7 @@ function renderTasksWithPhases(plan, phases) {
     });
   });
 
-  // Inline status selects — prevent row click propagation, handle status change
+  // Inline status selects - prevent row click propagation, handle status change
   pane.querySelectorAll('.task-inline-status').forEach(sel => {
     sel.addEventListener('click', e => e.stopPropagation());
     sel.addEventListener('change', async e => {
@@ -776,7 +776,7 @@ function renderTasksWithPhases(plan, phases) {
     });
   });
 
-  // Inline type selects — save task type directly
+  // Inline type selects - save task type directly
   pane.querySelectorAll('.task-inline-type').forEach(sel => {
     sel.addEventListener('click', e => e.stopPropagation());
     sel.addEventListener('change', async e => {
@@ -813,7 +813,7 @@ function renderTasksWithPhases(plan, phases) {
   });
 }
 
-// ── Phase generation ─────────────────────────────────────────────────────────
+// -- Phase generation ---------------------------------------------------------
 function generatePhases(planId) {
   state.outputText = '';
   state.outputRunning = true;
@@ -875,7 +875,7 @@ async function uiDeletePhase(planId, phaseId, phaseName) {
   await renderPanelFor(planId);
 }
 
-// ── Phase collapse toggle ─────────────────────────────────────────────────────
+// -- Phase collapse toggle -----------------------------------------------------
 function togglePhase(phaseId) {
   if (state.collapsedPhases.has(phaseId)) {
     state.collapsedPhases.delete(phaseId);
@@ -885,7 +885,7 @@ function togglePhase(phaseId) {
   if (state.selectedPlanId) renderPanelFor(state.selectedPlanId);
 }
 
-// ── New phase modal ──────────────────────────────────────────────────────────
+// -- New phase modal ----------------------------------------------------------
 function openNewPhaseModal(planId) {
   state.newPhasePlanId = planId;
   $id('modal-phase-name').value = '';
@@ -901,7 +901,7 @@ function closePhaseModal() {
 
 async function openArchiModal() {
   const data = await api.getArchi();
-  $id('archi-content').textContent = data?.content?.trim() || '(empty — run arche scan to generate)';
+  $id('archi-content').textContent = data?.content?.trim() || '(empty - run arche scan to generate)';
   $id('archi-hint').textContent = data?.exists ? 'storage/archi.md' : 'not generated yet';
   $id('modal-archi-overlay').classList.remove('hidden');
 }
@@ -912,7 +912,7 @@ function closeArchiModal() {
 
 async function openMemoryModal() {
   const data = await api.getMemory();
-  $id('memory-content').textContent = data?.content?.trim() || '(empty — no cross-track discoveries yet)';
+  $id('memory-content').textContent = data?.content?.trim() || '(empty - no cross-track discoveries yet)';
   $id('modal-memory-overlay').classList.remove('hidden');
 }
 
@@ -936,7 +936,7 @@ async function confirmNewPhase() {
   await renderPanelFor(planId);
 }
 
-// ── Instructions tab ────────────────────────────────────────────────────────
+// -- Instructions tab --------------------------------------------------------
 async function renderInstructions() {
   const pane = $id('tab-instructions');
   pane.innerHTML = `
@@ -1031,24 +1031,20 @@ async function loadInstructions() {
       listContainer.appendChild(item);
     });
     
-    // Set up checkbox event listeners
+    // Set up checkbox event listeners and restore checked state
     document.querySelectorAll('.instruction-checkbox').forEach(checkbox => {
+      // Restore selection state after re-render
+      if (state.selectedInstructionIds.has(checkbox.dataset.id)) {
+        checkbox.checked = true;
+      }
       checkbox.addEventListener('change', function() {
         const instructionId = this.dataset.id;
-        const enabled = this.checked;
-        
-        // Update selection state
-        if (enabled) {
+        if (this.checked) {
           state.selectedInstructionIds.add(instructionId);
         } else {
           state.selectedInstructionIds.delete(instructionId);
         }
-        
-        // Update visual feedback
         updateInstructionSelectionFeedback();
-        
-        // Enable/disable instruction via backend
-        api.enableUserInstruction(instructionId, enabled);
       });
     });
 
@@ -1130,7 +1126,14 @@ async function loadInstructions() {
   }
 }
 
-// ── Editor tab ─────────────────────────────────────────────────────────────
+function updateInstructionSelectionFeedback() {
+  const count = state.selectedInstructionIds.size;
+  const tab = document.querySelector('.tab[data-tab="instructions"]');
+  if (!tab) return;
+  tab.textContent = count > 0 ? `Instructions (${count})` : 'Instructions';
+}
+
+// -- Editor tab -------------------------------------------------------------
 const _expandedDirs = new Set(); // persists across re-renders
 let _cmEditor = null;
 let _autosaveTimer = null;
@@ -1271,7 +1274,7 @@ function _getCodeMirrorMode(filePath) {
 
 async function renderEditor() {
   if ($id('editor-browser')) {
-    // Already initialized — restore header and tab bar
+    // Already initialized - restore header and tab bar
     _renderEditorHeaderActions();
     _renderTabBar();
     return;
@@ -1398,7 +1401,7 @@ async function openFile(filePath) {
   const curDirty = _isTabDirty(curTab);
 
   if (curTab && !curDirty && !curTab.touched) {
-    // Replace current tab seulement si jamais modifié (ni dirty ni sauvé après modif)
+    // Replace current tab seulement si jamais modifie (ni dirty ni sauve après modif)
     curTab.path = filePath;
     curTab.savedContent = data.content;
     curTab.draftContent = null;
@@ -1407,7 +1410,7 @@ async function openFile(filePath) {
     curTab.touched = false;
     _activeTabPath = filePath;
   } else {
-    // Fichier modifié (même si sauvé) ou jamais ouvert → nouvel onglet
+    // Fichier modifie (même si sauve) ou jamais ouvert → nouvel onglet
     if (curTab && _cmEditor) {
       curTab.draftContent = _cmEditor.getValue();
       curTab.cursor = _cmEditor.getCursor();
@@ -1486,7 +1489,7 @@ function _showSaveStatus(el, msg, type) {
   el._fadeTimeout = setTimeout(() => { el.style.opacity = '0'; }, 2000);
 }
 
-// ── Spec tab ───────────────────────────────────────────────────────────────
+// -- Spec tab ---------------------------------------------------------------
 async function renderSpec(planId) {
   const el = $id('plan-header-actions'); if (el) el.innerHTML = '';
   const pane = $id('tab-spec');
@@ -1505,7 +1508,7 @@ async function renderSpec(planId) {
     <pre class="spec-content">${escHtml(data.content)}</pre>`;
 }
 
-// ── Sessions tab ───────────────────────────────────────────────────────────
+// -- Sessions tab -----------------------------------------------------------
 function renderSessions(plan) {
   const el = $id('plan-header-actions'); if (el) el.innerHTML = '';
   const sessions = plan.sessions || [];
@@ -1545,7 +1548,7 @@ async function toggleSession(headerEl, planId, date) {
   }
 }
 
-// ── UI task actions (action bar) ────────────────────────────────────────────
+// -- UI task actions (action bar) --------------------------------------------
 function _getUiTask() {
   const plan = state._lastPlan;
   if (!plan || !state.uiSelectedTaskId) return null;
@@ -1623,7 +1626,7 @@ function handleStatusChange(newStatus) {
     // Just select the task (it will be marked IN_PROGRESS when running)
     uiSelectTask();
   } else if (newStatus === 'TODO') {
-    // Reset to TODO — could add a confirmation here
+    // Reset to TODO - could add a confirmation here
     markTaskTodo(state.selectedPlanId, t.id);
   }
 }
@@ -1648,7 +1651,7 @@ async function handleTaskStatusChange(planId, taskId, newStatus, title = '') {
   }
 }
 
-// ── Legacy actions ───────────────────────────────────────────────────────────
+// -- Legacy actions -----------------------------------------------------------
 async function markTaskDone(planId, taskId) {
   await api.doneTask(planId, taskId);
   await renderPanelFor(planId);
@@ -1668,7 +1671,7 @@ async function switchCurrentTask(planId, taskId) {
   await refreshSidebar();
 }
 
-// ── Run task modal ──────────────────────────────────────────────────────────
+// -- Run task modal ----------------------------------------------------------
 function openRunModal(trackId, taskId, taskTitle, autoDone = true) {
   state.runTask = { trackId, taskId };
   $id('run-task-title').textContent = taskTitle;
@@ -1692,9 +1695,9 @@ function confirmRunTask() {
   runTask(trackId, taskId, comment, autoDone);
 }
 
-// ── Streaming helpers ───────────────────────────────────────────────────────
+// -- Streaming helpers -------------------------------------------------------
 function _switchToOutputTab() {
-  // Output is now in the terminals section — ensure console is open
+  // Output is now in the terminals section - ensure console is open
   if (state.consoleCollapsed) {
     $id('console-wrapper').classList.remove('collapsed');
     state.consoleCollapsed = false;
@@ -1825,7 +1828,7 @@ async function _startPostStream(url, body, { onMeta, onText, onDone, onError, on
   }
 }
 
-// ── Run task / Output tab ───────────────────────────────────────────────────
+// -- Run task / Output tab ---------------------------------------------------
 
 // Returns the track name to use as terminal tab title.
 function _getTerminalTitle(planId) {
@@ -1849,6 +1852,11 @@ async function runTask(planId, taskId, comment = '', autoDone = true) {
     const params = new URLSearchParams();
     if (comment) params.append('comment', comment);
     if (autoDone) params.append('auto_done', 'true');
+    
+    // Add selected instruction IDs if any
+    if (state.selectedInstructionIds && state.selectedInstructionIds.size > 0) {
+      params.append('instructions', Array.from(state.selectedInstructionIds).join(','));
+    }
 
     // Prepare the task server-side: switch to task, build prompt, save to temp file
     const resp = await fetch(`/api/tracks/${planId}/tasks/${taskId}/prepare-run?${params}`);
@@ -1882,7 +1890,7 @@ function runBulkTasks(trackId, taskIds, comment = '', autoDone = true) {
   state._outputMeta = '';
   state._outputDone = false;
 
-  // Single terminal for all bulk tasks — tab name = track name
+  // Single terminal for all bulk tasks - tab name = track name
   const bulkTabTitle = _getTerminalTitle(trackId);
   const bulkTerminal = createStreamTerminal(`bulk-${trackId}`, bulkTabTitle);
   bulkTerminal.term.clear();
@@ -1891,6 +1899,9 @@ function runBulkTasks(trackId, taskIds, comment = '', autoDone = true) {
     task_ids: taskIds,
     comment: comment,
     auto_done: autoDone,
+    instructions: state.selectedInstructionIds && state.selectedInstructionIds.size > 0 
+      ? Array.from(state.selectedInstructionIds).join(',') 
+      : '',
   };
 
   const url = `/api/tracks/${trackId}/tasks/bulk-run`;
@@ -1977,7 +1988,7 @@ function renderOutputPane() {
   // This function is kept for backward compatibility but does nothing.
 }
 
-// ── Edit task modal ─────────────────────────────────────────────────────────
+// -- Edit task modal ---------------------------------------------------------
 function openEditTask(planId, taskId) {
   const plan = state.plans.find(p => p.id === planId);
   const tasks = plan ? (plan.tasks || []) : [];
@@ -2015,7 +2026,7 @@ async function saveEditTask() {
   await renderPanelFor(planId);
 }
 
-// ── Complete task modal ─────────────────────────────────────────────────────
+// -- Complete task modal -----------------------------------------------------
 function openDoneModal(planId, taskId, title) {
   state.doneTask = { planId, taskId };
   $id('done-task-title').textContent = title;
@@ -2042,7 +2053,7 @@ async function confirmDoneTask() {
   await refreshSidebar();
 }
 
-// ── Block task modal ─────────────────────────────────────────────────────────
+// -- Block task modal ---------------------------------------------------------
 function openBlockModal(planId, taskId, title) {
   state.blockTask = { planId, taskId };
   $id('block-task-title').textContent = title;
@@ -2084,7 +2095,7 @@ async function refreshSidebar() {
   }
 }
 
-// ── Tabs ───────────────────────────────────────────────────────────────────
+// -- Tabs -------------------------------------------------------------------
 function setupTabs() {
   document.querySelectorAll('.tab').forEach(btn => {
     btn.addEventListener('click', async () => {
@@ -2104,7 +2115,7 @@ function setupTabs() {
   });
 }
 
-// ── Terminal management ────────────────────────────────────────────────────
+// -- Terminal management ----------------------------------------------------
 const TERM_OPTS = {
   theme: { background: '#0d0d0d', foreground: '#e0e0e0', cursor: '#39c5cf', selection: '#2a4a5a' },
   fontSize: 12,
@@ -2189,7 +2200,7 @@ function createTaskTerminal(taskId, taskTitle = '', token = null) {
   term.loadAddon(fitAddon);
   term.open(pane);
 
-  // Real PTY WebSocket — the user can interact with the LLM if it asks questions
+  // Real PTY WebSocket - the user can interact with the LLM if it asks questions
   const ws = _connectTerminalWs(id, term, fitAddon, token);
   const entry = { id, term, fitAddon, ws, pane, taskTitle: displayTitle };
   state.terminals.push(entry);
@@ -2317,7 +2328,7 @@ function _connectTerminalWs(id, term, fitAddon, token = null) {
   ws.onopen = () => {
     if (id === state.activeTerminalId) _updateStatus('connected');
     try { fitAddon.fit(); } catch (_) {}
-    // Always send current size explicitly — fitAddon.fit() only triggers term.onResize
+    // Always send current size explicitly - fitAddon.fit() only triggers term.onResize
     // when the size actually changes; if the terminal was already fitted before the WS
     // opened, onResize won't fire and the server PTY would stay at its default 80×24.
     sendResize(term.cols, term.rows);
@@ -2343,7 +2354,7 @@ function _connectTerminalWs(id, term, fitAddon, token = null) {
   return ws;
 }
 
-// ── Event listeners ────────────────────────────────────────────────────────
+// -- Event listeners --------------------------------------------------------
 function setupEventListeners() {
   setupTabs();
 
@@ -2687,7 +2698,7 @@ function refineSpec(planId) {
   });
 }
 
-/** Rewrite spec with LLM, then immediately generate tasks — single continuous output. */
+/** Rewrite spec with LLM, then immediately generate tasks - single continuous output. */
 function refineAndGenerate(planId) {
   state.outputText = '';
   state.outputRunning = true;
@@ -2698,7 +2709,7 @@ function refineAndGenerate(planId) {
     onMeta: (t) => { _setOutputHeader('▶ ' + t); },
     onText: _appendOutput,
     onDone: () => {
-      _appendOutput('\n────────────────────────────────────────\n');
+      _appendOutput('\n----------------------------------------\n');
       _setOutputHeader('▶ Generating tasks…');
       _startStream(`/api/tracks/${planId}/tasks/generate`, {
         onMeta: (t) => { _setOutputHeader('▶ ' + t); },
@@ -2711,7 +2722,7 @@ function refineAndGenerate(planId) {
   });
 }
 
-// ── Spec interview ──────────────────────────────────────────────────────────
+// -- Spec interview ----------------------------------------------------------
 function openInterviewStart(planId) {
   _switchToOutputTab();
   state.outputText = '';
@@ -2786,7 +2797,7 @@ async function finishInterview() {
   await _runInterviewTurn(state.interview.planId, state.interview.description, state.interview.qa);
 }
 
-// ── Code review ─────────────────────────────────────────────────────────────
+// -- Code review -------------------------------------------------------------
 function uiReviewTask() {
   const t = _getUiTask();
   if (t) reviewTask(state.selectedPlanId, t.id);
@@ -2818,7 +2829,7 @@ function reviewTask(planId, taskId) {
           state.reviewTask.issues = state.outputText.trim();
         }
         $id('review-actions').classList.remove('hidden');
-        showToast('✗ Review failed — create a rework task below');
+        showToast('✗ Review failed - create a rework task below');
       }
     },
   });
@@ -2837,7 +2848,7 @@ async function createReworkTask() {
   }
 }
 
-// ── Add task modal ───────────────────────────────────────────────────────────
+// -- Add task modal -----------------------------------------------------------
 function openAddTaskModal(trackId) {
   state.addTaskTrackId = trackId;
   $id('add-task-title').value = '';
@@ -2877,7 +2888,7 @@ async function confirmAddTask() {
   await renderPanelFor(trackId);
 }
 
-// ── Track done ────────────────────────────────────────────────────────────────
+// -- Track done ----------------------------------------------------------------
 async function confirmDoneTrack(trackId) {
   if (!confirm('Mark this track as done?')) return;
   const track = await api.doneTrack(trackId);
@@ -2887,7 +2898,7 @@ async function confirmDoneTrack(trackId) {
   }
 }
 
-// ── Utils ──────────────────────────────────────────────────────────────────
+// -- Utils ------------------------------------------------------------------
 function stripAnsi(str) {
   return str.replace(/\x1b\[[0-9;]*[mGKHF]/g, '').replace(/\r/g, '');
 }
@@ -2912,7 +2923,7 @@ function escHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
-// ── Resizable console ──────────────────────────────────────────────────────
+// -- Resizable console ------------------------------------------------------
 function setupResizableConsole() {
   const handle = $id('console-resize-handle');
   const wrapper = $id('console-wrapper');
@@ -2955,7 +2966,7 @@ function setupResizableConsole() {
   });
 }
 
-// ── Themes ─────────────────────────────────────────────────────────────────
+// -- Themes -----------------------------------------------------------------
 const THEMES = {
   dark: {
     label: 'Dark',
@@ -3077,7 +3088,7 @@ function closeThemeModal() {
   $id('modal-theme-overlay').classList.add('hidden');
 }
 
-// ── Settings modal ───────────────────────────────────────────────────────────
+// -- Settings modal -----------------------------------------------------------
 let _settingsActiveTab = 'paths';
 let _settingsModelsData = null;
 
@@ -3155,7 +3166,7 @@ async function _loadModelsTab() {
       toolSel.appendChild(opt);
     }
 
-    // Model select — cascades from tool select
+    // Model select - cascades from tool select
     const modelSel = document.createElement('select');
     modelSel.id = `settings-model-${phase}`;
 
@@ -3164,7 +3175,7 @@ async function _loadModelsTab() {
       for (const [mAlias, mDesc] of Object.entries(tools[toolAlias]?.models || {})) {
         const opt = document.createElement('option');
         opt.value = mAlias;
-        opt.textContent = `${mAlias} — ${mDesc}`;
+        opt.textContent = `${mAlias} - ${mDesc}`;
         if (mAlias === selectedModel) opt.selected = true;
         modelSel.appendChild(opt);
       }
@@ -3236,7 +3247,7 @@ async function saveSettings() {
 
 function _initThemeListeners() {
   _buildThemeModal();
-  // Apply a quick visual default without saving — the authoritative theme comes from the server in init().
+  // Apply a quick visual default without saving - the authoritative theme comes from the server in init().
   const earlyKey = Object.keys(localStorage).find(k => k.startsWith('arche-theme-'));
   const earlyTheme = earlyKey ? localStorage.getItem(earlyKey) : null;
   _applyThemeCss(earlyTheme && THEMES[earlyTheme] ? earlyTheme : 'dark');
@@ -3253,7 +3264,7 @@ function setupTheme(projectName) {
   if (saved && THEMES[saved]) _applyThemeCss(saved);
 }
 
-// ── Password Lock ───────────────────────────────────────────────────────────
+// -- Password Lock -----------------------------------------------------------
 async function setupLockScreen() {
   // Check if password is set
   const status = await api.getPasswordStatus();
@@ -3405,7 +3416,7 @@ async function updateSessionPassword(password) {
   return false;
 }
 
-// ── Boot ───────────────────────────────────────────────────────────────────
+// -- Boot -------------------------------------------------------------------
 window.addEventListener('DOMContentLoaded', init);
 window.applyTheme = applyTheme;
 window.closeThemeModal = closeThemeModal;

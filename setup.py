@@ -7,6 +7,9 @@ setup(
     packages=find_packages(),
     # Module racine arche.py
     py_modules=["arche"],
+    # Include instruction templates (markdown files)
+    include_package_data=True,
+    package_data={"": ["instructions/**/*.md", "instructions/**/*.yaml"]},
     install_requires=[
         "typer>=0.9.0,<1.0.0",
         "rich>=13.7.0,<14.0.0",

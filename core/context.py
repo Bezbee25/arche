@@ -14,6 +14,58 @@ from core.session_logger import get_session_log, list_sessions
 from core.task_engine import STATUS_DONE, STATUS_IN_PROGRESS, STATUS_TODO, load_tasks
 
 
+_MAX_INSTRUCTION_CHARS = 4000
+
+
+def _sanitize_instruction_name(name: str) -> str:
+    """Strip markdown/special chars from an instruction name for use in a heading."""
+    # Remove leading #, *, _ that could break the ### heading
+    name = name.strip().lstrip("#").strip()
+    # Collapse whitespace
+    name = " ".join(name.split())
+    return name or "Instruction"
+
+
+def _parse_builtin_instruction(instruction_id: str, raw: str) -> tuple[str, str]:
+    """Extract name and body from a built-in .md file.
+
+    The first `# Heading` line is used as the name and removed from the body
+    so it isn't duplicated when formatted as `### Name` in the prompt.
+    """
+    lines = raw.splitlines()
+    name = instruction_id
+    body_start = 0
+    for i, line in enumerate(lines):
+        if line.startswith("# "):
+            name = line[2:].strip()
+            body_start = i + 1
+            break
+    # Skip blank lines immediately after the heading
+    while body_start < len(lines) and not lines[body_start].strip():
+        body_start += 1
+    content = "\n".join(lines[body_start:]).strip()
+    return _sanitize_instruction_name(name), content
+
+
+def _sanitize_instruction_content(content: str) -> str:
+    """Downgrade headings in instruction content to avoid conflicts with the prompt
+    structure, and truncate to a reasonable length."""
+    if not content:
+        return ""
+    lines = []
+    for line in content.splitlines():
+        # Downgrade ## → #### and # → ### so they stay below the prompt's own ## sections
+        if line.startswith("## "):
+            line = "####" + line[2:]
+        elif line.startswith("# "):
+            line = "###" + line[1:]
+        lines.append(line)
+    result = "\n".join(lines).strip()
+    if len(result) > _MAX_INSTRUCTION_CHARS:
+        result = result[:_MAX_INSTRUCTION_CHARS].rstrip() + "\n\n*(instruction tronquée)*"
+    return result
+
+
 def _archi_path(track_id: str) -> Path:
     return TRACKS_DIR / track_id / "archi.md"
 
@@ -38,7 +90,7 @@ def append_archi(track_id: str, notes: str) -> None:
         f.write(memory_header + notes.strip() + "\n")
 
 
-def build_task_prompt(track_id: str, track_meta: dict, comment: str = "") -> str:
+def build_task_prompt(track_id: str, track_meta: dict, comment: str = "", selected_instruction_ids: list = None) -> str:
     """Construit le prompt complet pour exécuter la tâche courante."""
     project = load_project()
     tasks = load_tasks(track_id)
@@ -46,6 +98,74 @@ def build_task_prompt(track_id: str, track_meta: dict, comment: str = "") -> str
     global_archi = get_global_archi()
     global_memory = get_global_memory()
     archi = get_archi(track_id)
+    
+    # Load selected instructions if provided
+    selected_instructions = []
+    missing_instruction_ids = []
+    if selected_instruction_ids:
+        store = None
+        try:
+            from core.instruction_store import InstructionStore
+            store = InstructionStore()
+        except Exception:
+            pass
+
+        instructions_dir = Path(__file__).parent.parent / "instructions"
+        local_instructions_dir = Path(".arche-storage/instructions")
+
+        for instruction_id in selected_instruction_ids:
+            loaded = False
+
+            # 1. Try the user store (manifest.json) first
+            if store is not None:
+                try:
+                    instruction = store.get_instruction(instruction_id)
+                    if instruction and instruction.is_enabled:
+                        selected_instructions.append({
+                            "name": _sanitize_instruction_name(instruction.name),
+                            "content": _sanitize_instruction_content(instruction.content),
+                        })
+                        loaded = True
+                except Exception:
+                    pass
+
+            if loaded:
+                continue
+
+            # 2. Local project instructions: .arche-storage/instructions/*.md
+            local_md = local_instructions_dir / f"{instruction_id}.md"
+            if local_md.exists():
+                try:
+                    raw = local_md.read_text(encoding="utf-8")
+                    name, content = _parse_builtin_instruction(instruction_id, raw)
+                    selected_instructions.append({
+                        "name": name,
+                        "content": _sanitize_instruction_content(content),
+                    })
+                    loaded = True
+                except Exception:
+                    pass
+
+            if loaded:
+                continue
+
+            # 3. Fallback: search built-in (global) instruction files
+            if instructions_dir.exists():
+                try:
+                    for md_file in instructions_dir.rglob(f"{instruction_id}.md"):
+                        raw = md_file.read_text(encoding="utf-8")
+                        name, content = _parse_builtin_instruction(instruction_id, raw)
+                        selected_instructions.append({
+                            "name": name,
+                            "content": _sanitize_instruction_content(content),
+                        })
+                        loaded = True
+                        break
+                except Exception:
+                    pass
+
+            if not loaded:
+                missing_instruction_ids.append(instruction_id)
 
     # Tâche courante
     current = next((t for t in tasks if t["status"] == STATUS_IN_PROGRESS), None)
@@ -125,6 +245,25 @@ def build_task_prompt(track_id: str, track_meta: dict, comment: str = "") -> str
 
     if comment and comment.strip():
         parts.append(f"## Commentaire du développeur\n\n{comment.strip()}")
+
+    # Add selected instructions if any
+    if selected_instructions:
+        instructions_text = "\n\n".join(
+            f"### {inst['name']}\n\n{inst['content']}"
+            for inst in selected_instructions
+        )
+        warning = ""
+        if missing_instruction_ids:
+            ids_str = ", ".join(f"`{i}`" for i in missing_instruction_ids)
+            warning = f"\n\n> ⚠ Instructions non trouvées (ignorées) : {ids_str}"
+        parts.append(f"## Instructions sélectionnées\n\n{instructions_text}{warning}")
+    elif missing_instruction_ids:
+        # All selected instructions were missing — add a note but don't block execution
+        ids_str = ", ".join(f"`{i}`" for i in missing_instruction_ids)
+        parts.append(
+            f"## Instructions sélectionnées\n\n"
+            f"> ⚠ Instructions demandées introuvables (ignorées) : {ids_str}"
+        )
 
     parts.append(
         "---\n"
