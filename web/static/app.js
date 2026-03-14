@@ -66,6 +66,7 @@ const api = {
   getTrack: (id) => apiFetch(`/api/tracks/${id}`),
   getTrackSpec: (id) => apiFetch(`/api/tracks/${id}/spec`),
   getSession: (trackId, date) => apiFetch(`/api/tracks/${trackId}/sessions/${date}`),
+  getRunStatus: (trackId) => apiFetch(`/api/tracks/${trackId}/run-status`),
   createTrack: (name, trackType = 'feature') => apiFetch('/api/tracks', { method: 'POST', body: JSON.stringify({ name, track_type: trackType }) }),
   generateTemplate: (planId, description, subtypes) => apiFetch(`/api/tracks/${planId}/tasks/generate-template`, { method: 'POST', body: JSON.stringify({ description, subtypes }) }),
   switchTrack: (id) => apiFetch('/api/tracks/switch', { method: 'POST', body: JSON.stringify({ track_id: id }) }),
@@ -229,6 +230,13 @@ async function renderPanelFor(planId) {
 
   state._lastPlan = plan;
   renderPlanHeader(plan);
+
+  // Restore outputRunning state if there's an active run
+  const runStatus = await api.getRunStatus(planId);
+  if (runStatus && runStatus.running) {
+    state.outputRunning = true;
+  }
+
   renderTabContent(plan, state.activeTab);
 }
 

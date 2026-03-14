@@ -124,7 +124,8 @@ def _show_help() -> None:
     c.print(f"  {cmd('make install-pipx')}\n")
     c.print("  [dim]# In your project:[/dim]")
     c.print(f"  {cmd('arche init')}                        [dim]← project name, stack, LLM model choices[/dim]")
-    c.print(f"  {cmd('arche track new \"feat: JWT auth\"')}  [dim]← interactive spec Q&A → tasks generated[/dim]")
+    track_cmd = 'arche track new "feat: JWT auth"'
+    c.print(f"  {cmd(track_cmd)}  [dim]← interactive spec Q&A → tasks generated[/dim]")
     c.print()
     c.print("  [dim]# Work loop (repeat until done):[/dim]")
     c.print(f"  {cmd('arche task run')}       [dim]← runs current task with full context → LLM[/dim]")
@@ -137,11 +138,13 @@ def _show_help() -> None:
     c.print()
     c.print(Rule("Flow 2 — Multi-track (feature + urgent bug in parallel)", style="dim"))
     c.print()
-    c.print(f"  {cmd('arche track new \"feat: JWT auth\"')}    [dim]← track is ACTIVE[/dim]")
+    cmd_jwt = 'arche track new "feat: JWT auth"'
+    cmd_crash = 'arche track new "debug: crash login"'
+    c.print(f"  {cmd(cmd_jwt)}    [dim]← track is ACTIVE[/dim]")
     c.print(f"  {cmd('arche task run')}                       [dim]← working on feat[/dim]")
     c.print()
     c.print("  [dim]# Urgent bug comes in:[/dim]")
-    c.print(f"  {cmd('arche track new \"debug: crash login\"')} [dim]← feat PAUSED, debug ACTIVE[/dim]")
+    c.print(f"  {cmd(cmd_crash)} [dim]← feat PAUSED, debug ACTIVE[/dim]")
     c.print(f"  {cmd('arche task run')}                        [dim]← debug context loaded automatically[/dim]")
     c.print(f"  {cmd('arche task done')}  {cmd('arche track done')}   [dim]← bug fixed[/dim]")
     c.print()
@@ -153,8 +156,10 @@ def _show_help() -> None:
     c.print()
     c.print(Rule("Flow 3 — Debug", style="dim"))
     c.print()
-    c.print(f"  {cmd('arche track new \"debug: NullPointerException login\"')}")
-    c.print(f"  {cmd('arche debug \"NullPointerException at UserService.java:42\"')}")
+    cmd_npe = 'arche track new "debug: NullPointerException login"'
+    cmd_debug = 'arche debug "NullPointerException at UserService.java:42"'
+    c.print(f"  {cmd(cmd_npe)}")
+    c.print(f"  {cmd(cmd_debug)}")
     c.print(f"                   [dim]← analyses the error with full project context[/dim]")
     c.print(f"  {cmd('arche task run')}   [dim]← implements the fix[/dim]")
     c.print(f"  {cmd('arche task done')}  {cmd('arche track done')}")
@@ -305,20 +310,28 @@ def init() -> None:
     valid_specs = {s for s, _ in available_specs}
 
     def pick_model(phase: str, desc: str) -> str:
+        import questionary
         default_spec = DEFAULT_MODELS.get(phase, "claude/sonnet")
         if not available_specs:
             return default_spec
 
-        console.print(f"\n  [bold]{phase}[/bold] — {desc}")
-        for spec, label in available_specs:
-            marker = "[green]●[/green]" if spec == default_spec else " "
-            console.print(f"    {marker} {spec}  [dim]{label}[/dim]")
+        default_idx = next(
+            (i for i, (s, _) in enumerate(available_specs) if s == default_spec), 0
+        )
 
-        while True:
-            raw = Prompt.ask(f"  Model spec", default=default_spec).strip()
-            if raw in valid_specs:
-                return raw
-            console.print(f"  [red]Unknown spec '{raw}'. Choose from the list above.[/red]")
+        choices = [
+            questionary.Choice(title=f"{spec}  {label}", value=spec)
+            for spec, label in available_specs
+        ]
+
+        console.print(f"\n  [bold]{phase}[/bold] — {desc}")
+        result = questionary.select(
+            "  Modèle :",
+            choices=choices,
+            default=choices[default_idx],
+        ).ask()
+
+        return result if result else available_specs[default_idx][0]
 
     console.print("\n[bold]Model selection per phase[/bold] (Enter to keep default)\n")
 

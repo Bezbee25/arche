@@ -15,6 +15,7 @@ setup(
         "websockets>=12.0",
         "ptyprocess>=0.7.0",
         "pyyaml>=6.0.1",
+        "questionary>=2.0.0",
         "python-multipart>=0.0.9",
     ],
     entry_points={
