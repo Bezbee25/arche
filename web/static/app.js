@@ -1012,6 +1012,9 @@ async function loadInstructions() {
       const tagsHtml = instruction.tags && instruction.tags.length > 0 
         ? `<div class="instruction-tags">${instruction.tags.map(t => `<span class="tag">${escHtml(t)}</span>`).join(' ')}</div>`
         : '';
+      const isEditable = instruction.source === 'user';
+      item.dataset.source = instruction.source || '';
+      item.dataset.category = instruction.category || '';
       item.innerHTML = `
         <div class="instruction-header">
           <input type="checkbox" class="instruction-checkbox" data-id="${instruction.id}" />
@@ -1021,11 +1024,17 @@ async function loadInstructions() {
         ${tagsHtml}
         <div class="instruction-description">${escHtml(instruction.description || '')}</div>
         <div class="instruction-content" style="display: none;">
-          <textarea class="instruction-editor" data-id="${instruction.id}">${escHtml(instruction.content || '')}</textarea>
-          <div class="instruction-editor-actions">
-            <button class="btn-save-instruction" data-id="${instruction.id}">Save</button>
-            <button class="btn-cancel-edit" data-id="${instruction.id}">Cancel</button>
-          </div>
+          ${isEditable
+            ? `<textarea class="instruction-editor" data-id="${instruction.id}"></textarea>
+               <div class="instruction-editor-actions">
+                 <button class="btn-save-instruction" data-id="${instruction.id}">Save</button>
+                 <button class="btn-cancel-edit" data-id="${instruction.id}">Cancel</button>
+               </div>`
+            : `<pre class="instruction-viewer"></pre>
+               <div class="instruction-editor-actions">
+                 <button class="btn-cancel-edit" data-id="${instruction.id}">Close</button>
+               </div>`
+          }
         </div>
       `;
       listContainer.appendChild(item);
@@ -1048,19 +1057,49 @@ async function loadInstructions() {
       });
     });
 
-    // Set up instruction name click to open editor
+    // Set up instruction name click to open editor or viewer
     document.querySelectorAll('.instruction-name').forEach(nameElement => {
-      nameElement.addEventListener('click', function() {
+      nameElement.addEventListener('click', async function() {
         const instructionId = this.dataset.id;
-        const contentElement = this.closest('.instruction-item').querySelector('.instruction-content');
-        
-        // Toggle editor visibility
-        if (contentElement.style.display === 'none') {
-          contentElement.style.display = 'block';
-          this.classList.add('editing');
-        } else {
+        const item = this.closest('.instruction-item');
+        const contentElement = item.querySelector('.instruction-content');
+        const isEditable = item.dataset.source === 'user';
+
+        // Toggle visibility
+        if (contentElement.style.display !== 'none') {
           contentElement.style.display = 'none';
           this.classList.remove('editing');
+          return;
+        }
+
+        this.classList.add('editing');
+        contentElement.style.display = 'block';
+
+        if (isEditable) {
+          // Load user instruction content into textarea
+          const textarea = contentElement.querySelector('.instruction-editor');
+          if (textarea && !textarea.value) {
+            try {
+              const data = await api.getUserInstruction(instructionId);
+              textarea.value = data.content || '';
+            } catch (e) {
+              console.error('Failed to load instruction content', e);
+            }
+          }
+        } else {
+          // Load builtin/global instruction content into read-only viewer
+          const viewer = contentElement.querySelector('.instruction-viewer');
+          if (viewer && !viewer.textContent) {
+            viewer.textContent = 'Loading…';
+            try {
+              const categoryParam = item.dataset.category ? `&category=${encodeURIComponent(item.dataset.category)}` : '';
+              const data = await apiFetch(`/api/instructions/get?id=${encodeURIComponent(instructionId)}${categoryParam}`);
+              viewer.textContent = data.content || '';
+            } catch (e) {
+              viewer.textContent = 'Failed to load content.';
+              console.error('Failed to load instruction content', e);
+            }
+          }
         }
       });
     });

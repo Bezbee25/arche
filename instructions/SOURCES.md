@@ -69,7 +69,7 @@ Format: `slug` → description | source path
 
 | slug | description | source |
 |------|-------------|--------|
-| `rust-best-practices` | Rust systems programming best practices | hand-written (no cursorrules source) |
+| `rust-best-practices` | Rust systems programming best practices: ownership, Result, async, Clippy | hand-written |
 
 #### Java / Kotlin
 
@@ -99,6 +99,8 @@ Format: `slug` → description | source path
 | slug | description | source |
 |------|-------------|--------|
 | `cpp-guidelines` | C++ programming guidelines | `cpp-programming-guidelines-cursorrules-prompt-file` |
+| `cpp-best-practices` | C++20 best practices: RAII, smart pointers, STL, concurrency | hand-written |
+| `c-best-practices` | C11/C17 best practices: memory safety, error handling, portability | hand-written |
 
 #### Solidity / Blockchain
 
@@ -219,6 +221,12 @@ Format: `slug` → description | source path
 | `docker-containerization` | Docker best practices | `python-containerization-cursorrules-prompt-file` |
 | `kubernetes-docs` | Kubernetes + MkDocs | `kubernetes-mkdocs-documentation-cursorrules-prompt` |
 
+#### SQL / Databases
+
+| slug | description | source |
+|------|-------------|--------|
+| `sql-best-practices` | SQL best practices: schema design, indexes, security, migrations | hand-written |
+
 #### Testing
 
 | slug | description | source |
@@ -261,7 +269,7 @@ Format: `slug` → description | source path
 | Languages (Java/Kotlin) | 4 |
 | Languages (Elixir) | 2 |
 | Languages (PHP) | 2 |
-| Languages (C/C++) | 1 |
+| Languages (C/C++) | 3 |
 | Languages (Solidity) | 2 |
 | Frontend (React/Next.js) | 9 |
 | Frontend (Vue/Svelte/Angular/Astro) | 4 |
@@ -274,7 +282,8 @@ Format: `slug` → description | source path
 | Tooling (DevOps) | 2 |
 | Tooling (Testing) | 4 |
 | Tooling (Mobile) | 3 |
-| **Total** | **76** |
+| Tooling (SQL/DB) | 1 |
+| **Total** | **79** |
 
 ---
 

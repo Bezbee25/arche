@@ -1016,6 +1016,25 @@ body {
   border-color: var(--cyan);
 }
 
+.instruction-viewer {
+  width: 100%;
+  min-height: 150px;
+  max-height: 400px;
+  padding: 10px 12px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin-bottom: 10px;
+  box-sizing: border-box;
+  opacity: 0.85;
+}
+
 .instruction-editor-actions {
   display: flex;
   gap: 8px;

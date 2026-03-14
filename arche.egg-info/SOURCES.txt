@@ -28,6 +28,15 @@ core/task_engine.py
 core/track_manager.py
 instructions/SOURCES.md
 instructions/manifest.schema.yaml
+instructions/manifest.yaml
+instructions/dev/c-best-practices.md
+instructions/dev/cpp-best-practices.md
+instructions/dev/go-best-practices.md
+instructions/dev/java-best-practices.md
+instructions/dev/javascript-best-practices.md
+instructions/dev/python-best-practices.md
+instructions/dev/rust-best-practices.md
+instructions/dev/sql-best-practices.md
 instructions/devops/ansible-best-practices.md
 instructions/devops/docker-best-practices.md
 instructions/devops/github-actions-cicd.md
