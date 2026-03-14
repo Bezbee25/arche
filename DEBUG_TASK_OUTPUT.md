@@ -1,4 +1,4 @@
-# Debugging Task Output in Terminals
+ # Debugging Task Output in Terminals
 
 ## Problem
 Task output is not appearing in dedicated terminals when running a task. The expected behavior is:

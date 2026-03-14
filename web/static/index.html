@@ -33,6 +33,9 @@
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
   <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+  <!-- CodeMirror -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/dracula.min.css">
 </head>
 <body>
   <div id="app">
@@ -63,6 +66,7 @@
         <div class="sidebar-label">TRACKS</div>
         <div id="plan-list"></div>
       </aside>
+      <button id="sidebar-toggle" title="Toggle sidebar">‹</button>
 
       <!-- Central panel -->
       <section id="panel">
@@ -70,10 +74,15 @@
         <div id="plan-tabs">
           <button class="tab" data-tab="spec">Spec</button>
           <button class="tab active" data-tab="tasks">Tasks</button>
+          <button class="tab" data-tab="editor">Editor</button>
+          <button class="tab" data-tab="instructions">Instructions</button>
         </div>
         <div id="tab-content">
           <div id="tab-tasks" class="tab-pane active"></div>
           <div id="tab-spec" class="tab-pane"></div>
+          <div id="tab-editor" class="tab-pane"></div>
+          <div id="tab-instructions" class="tab-pane"></div>
+        <div id="tab-output" class="tab-pane">
           <div id="tab-output" class="tab-pane">
             <!-- Task output is now displayed in dedicated terminals in the terminals section -->
             <!-- Interview: start panel -->
@@ -272,6 +281,7 @@
       <div class="docs-header">
         <h3>Architecture Blueprint</h3>
         <span id="archi-hint" class="archi-hint"></span>
+        <button id="archi-scan" class="btn-ghost btn-sm" title="Scan project architecture">⚡ Scan</button>
         <button id="archi-close" class="btn-ghost btn-sm">✕</button>
       </div>
       <pre id="archi-content" class="memory-content">(empty)</pre>
@@ -490,6 +500,16 @@
     </div>
   </div>
 
+  <!-- CodeMirror core + modes -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/python/python.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/javascript/javascript.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/css/css.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/xml/xml.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/htmlmixed/htmlmixed.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/yaml/yaml.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/markdown/markdown.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/shell/shell.min.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

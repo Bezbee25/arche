@@ -17,6 +17,7 @@ setup(
         "pyyaml>=6.0.1",
         "questionary>=2.0.0",
         "python-multipart>=0.0.9",
+        "pydantic>=2.0.0,<3.0.0",
     ],
     entry_points={
         "console_scripts": [

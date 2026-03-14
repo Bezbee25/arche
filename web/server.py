@@ -19,6 +19,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.websockets import WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
+from models.instruction import Instruction
+
 from core.track_manager import (
     get_active_track,
     get_track,
@@ -38,6 +40,7 @@ from core.track_manager import (
     _DEFAULT_PHASE_ID,
     STORAGE_DIR,
 )
+from core.instruction_store import InstructionStore
 from core.task_engine import (
     add_task,
     block_task,
@@ -116,6 +119,10 @@ class TemplateGenerationRequest(BaseModel):
 
 class PasswordRequest(BaseModel):
     password: str
+
+class WriteFileRequest(BaseModel):
+    path: str
+    content: str
 
 
 def _parse_claude_json_line(raw: str) -> str:
@@ -214,6 +221,10 @@ _intentionally_stopped: set = set()
 
 
 def create_app() -> FastAPI:
+    # Ensure instructions are loaded before app starts
+    from core.track_manager import load_instructions
+    load_instructions()
+    
     app = FastAPI(title="arche", docs_url="/api/docs")
 
     terminal_manager = TerminalManager()
@@ -289,6 +300,45 @@ def create_app() -> FastAPI:
         project["models"] = req.get("models", {})
         save_project(project)
         return {"ok": True, "models": project["models"]}
+
+    @app.get("/api/scan")
+    async def stream_scan():
+        """Stream architecture scan via SSE."""
+        from core.scanner import run_scan as core_run_scan
+        from core.track_manager import load_project
+        
+        # Check if project exists
+        project = load_project()
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not initialized. Run 'arche init' first.")
+        
+        def scan_generator():
+            try:
+                # Run the scan and capture output
+                import io
+                import sys
+                from contextlib import redirect_stdout, redirect_stderr
+                
+                # Capture output
+                output = io.StringIO()
+                error = io.StringIO()
+                
+                with redirect_stdout(output), redirect_stderr(error):
+                    core_run_scan()
+                
+                # Yield the captured output
+                full_output = output.getvalue() + error.getvalue()
+                if full_output:
+                    for line in full_output.split('\n'):
+                        if line.strip():
+                            yield f"data: {line}\n\n"
+                else:
+                    yield "data: ✓ Architecture scan completed\n\n"
+                    
+            except Exception as e:
+                yield f"data: ⚠ Error: {str(e)}\n\n"
+        
+        return StreamingResponse(scan_generator(), media_type="text/event-stream")
 
     # ── Password Lock Endpoints ─────────────────────────────────────────────────
     @app.get("/api/settings/password")
@@ -1551,6 +1601,256 @@ def create_app() -> FastAPI:
 
     if STATIC_DIR.exists():
         app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+    import os as _os
+    _files_base = Path(_os.getcwd()).resolve()
+
+    def _resolve_safe(path: str) -> Path:
+        """Resolve *path* relative to the project root and enforce sandbox."""
+        target = (_files_base / path).resolve()
+        if not target.is_relative_to(_files_base):
+            raise HTTPException(status_code=403, detail="Access denied")
+        return target
+
+    @app.get("/api/files/list")
+    def list_files(path: str = "."):
+        target = _resolve_safe(path)
+        if not target.exists():
+            raise HTTPException(status_code=404, detail="Path not found")
+        if not target.is_dir():
+            raise HTTPException(status_code=400, detail="Path is not a directory")
+        entries = []
+        for item in sorted(target.iterdir(), key=lambda p: (p.is_file(), p.name.lower())):
+            try:
+                size = item.stat().st_size if item.is_file() else None
+            except OSError:
+                size = None
+            entries.append({
+                "name": item.name,
+                "type": "file" if item.is_file() else "dir",
+                "size": size,
+                "path": str(item.relative_to(_files_base)),
+            })
+        return {"path": str(target.relative_to(_files_base)), "entries": entries}
+
+    @app.get("/api/files/read")
+    def read_file(path: str):
+        target = _resolve_safe(path)
+        if not target.exists():
+            raise HTTPException(status_code=404, detail="File not found")
+        if not target.is_file():
+            raise HTTPException(status_code=400, detail="Path is not a file")
+        try:
+            content = target.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            raise HTTPException(status_code=400, detail="Binary file not supported")
+        return {"path": str(target.relative_to(_files_base)), "content": content}
+
+    @app.post("/api/files/write")
+    def write_file(req: WriteFileRequest):
+        target = _resolve_safe(req.path)
+        if target.exists() and not target.is_file():
+            raise HTTPException(status_code=400, detail="Path is a directory")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(req.content, encoding="utf-8")
+        return {"path": str(target.relative_to(_files_base)), "ok": True}
+
+    # ── Instructions API ────────────────────────────────────────────────
+
+    INSTRUCTIONS_DIR = Path(__file__).parent.parent / "instructions"
+
+    @app.get("/api/instructions/list")
+    def list_instructions():
+        """List all available instruction templates."""
+        if not INSTRUCTIONS_DIR.exists():
+            return {"instructions": []}
+
+        instructions = []
+        for category_dir in sorted(INSTRUCTIONS_DIR.iterdir()):
+            if not category_dir.is_dir():
+                continue
+            for instruction_file in sorted(category_dir.glob("*.md")):
+                try:
+                    content = instruction_file.read_text(encoding="utf-8")
+                    # Extract metadata from file content
+                    name = instruction_file.stem
+                    description = ""
+                    file_tags = []
+                    for line in content.split("\n"):
+                        if line.startswith("# "):
+                            name = line[2:].strip()
+                        elif line.startswith("tags:"):
+                            file_tags = [t.strip() for t in line.replace("tags:", "").split(",")]
+                    instructions.append({
+                        "id": instruction_file.stem,
+                        "name": name,
+                        "category": category_dir.name,
+                        "path": str(instruction_file.relative_to(INSTRUCTIONS_DIR)),
+                        "description": description,
+                        "tags": file_tags,
+                    })
+                except Exception:
+                    continue
+        return {"instructions": instructions}
+
+    @app.get("/api/instructions/search")
+    def search_instructions(q: str = None, category: str = None, tags: str = None):
+        """Search instructions by query, category, and/or tags."""
+        if not INSTRUCTIONS_DIR.exists():
+            return {"instructions": []}
+
+        instructions = []
+        for category_dir in sorted(INSTRUCTIONS_DIR.iterdir()):
+            if not category_dir.is_dir():
+                continue
+            if category and category_dir.name != category:
+                continue
+            for instruction_file in sorted(category_dir.glob("*.md")):
+                try:
+                    content = instruction_file.read_text(encoding="utf-8")
+                    name = instruction_file.stem
+                    description = ""
+                    file_tags = []
+                    for line in content.split("\n"):
+                        if line.startswith("# "):
+                            name = line[2:].strip()
+                        elif line.startswith("tags:"):
+                            file_tags = [t.strip() for t in line.replace("tags:", "").split(",")]
+                        elif line.startswith("description:") and not description:
+                            description = line.replace("description:", "").strip()
+                    
+                    # Filter by tags - match if any of the provided tags are in file_tags
+                    if tags:
+                        search_tags = [t.strip().lower() for t in tags.split(",")]
+                        if not any(tag in [t.lower() for t in file_tags] for tag in search_tags):
+                            continue
+                    
+                    # Filter by query - search in name, description, and tags
+                    if q:
+                        query_lower = q.lower()
+                        name_match = query_lower in name.lower()
+                        desc_match = query_lower in description.lower()
+                        tags_match = any(query_lower in tag.lower() for tag in file_tags)
+                        if not (name_match or desc_match or tags_match):
+                            continue
+                    
+                    instructions.append({
+                        "id": instruction_file.stem,
+                        "name": name,
+                        "category": category_dir.name,
+                        "path": str(instruction_file.relative_to(INSTRUCTIONS_DIR)),
+                        "description": description,
+                        "tags": file_tags,
+                    })
+                except Exception:
+                    continue
+        return {"instructions": instructions}
+
+    @app.get("/api/instructions/get")
+    def get_instruction(id: str, category: str = None):
+        """Get a specific instruction by ID and optional category."""
+        if not INSTRUCTIONS_DIR.exists():
+            raise HTTPException(status_code=404, detail="Instructions directory not found")
+
+        # Try to find the instruction
+        instruction_file = None
+        if category:
+            category_dir = INSTRUCTIONS_DIR / category
+            if category_dir.exists() and category_dir.is_dir():
+                instruction_file = category_dir / f"{id}.md"
+        else:
+            # Search across all categories
+            for category_dir in INSTRUCTIONS_DIR.iterdir():
+                if not category_dir.is_dir():
+                    continue
+                file_path = category_dir / f"{id}.md"
+                if file_path.exists():
+                    instruction_file = file_path
+                    break
+
+        if not instruction_file or not instruction_file.exists():
+            raise HTTPException(status_code=404, detail="Instruction not found")
+
+        try:
+            content = instruction_file.read_text(encoding="utf-8")
+            return {
+                "id": id,
+                "category": category or instruction_file.parent.name,
+                "content": content,
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to read instruction: {e}")
+
+    # ── Instruction Store API (User Custom Instructions) ──────────────────────────────────────────────────
+
+    # Initialize instruction store and load manifest on startup
+    try:
+        instruction_store = InstructionStore()
+        # Load manifest to ensure it exists and is ready
+        instruction_store.load_manifest()
+    except ImportError:
+        # pydantic not available, create a dummy store
+        instruction_store = None
+
+    @app.get("/api/instructions/store/list")
+    def list_store_instructions():
+        """List all instructions from the store (including user custom instructions)."""
+        instructions = instruction_store.get_all_instructions()
+        return {"instructions": instructions}
+
+    @app.get("/api/instructions/store/search")
+    def search_store_instructions(q: str = None, category: str = None, tags: list = None):
+        """Search instructions in the store."""
+        instructions = instruction_store.search_instructions(
+            query=q,
+            category=category,
+            tags=tags
+        )
+        return {"instructions": instructions}
+
+    @app.get("/api/instructions/store/get/{instruction_id}")
+    def get_store_instruction(instruction_id: str):
+        """Get a specific instruction from the store."""
+        instruction = instruction_store.get_instruction(instruction_id)
+        if not instruction:
+            raise HTTPException(status_code=404, detail="Instruction not found")
+        return instruction
+
+    @app.post("/api/instructions/store/add")
+    def add_store_instruction(instruction: Instruction):
+        """Add a new instruction to the store."""
+        try:
+            instruction_store.add_instruction(instruction)
+            return {"success": True, "id": instruction.id}
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    @app.put("/api/instructions/store/update")
+    def update_store_instruction(instruction: Instruction):
+        """Update an existing instruction in the store."""
+        try:
+            instruction_store.update_instruction(instruction)
+            return {"success": True, "id": instruction.id}
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+
+    @app.delete("/api/instructions/store/delete/{instruction_id}")
+    def delete_store_instruction(instruction_id: str):
+        """Delete an instruction from the store."""
+        try:
+            instruction_store.delete_instruction(instruction_id)
+            return {"success": True}
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+
+    @app.post("/api/instructions/store/enable/{instruction_id}")
+    def enable_store_instruction(instruction_id: str, enabled: bool):
+        """Enable or disable an instruction in the store."""
+        try:
+            instruction_store.enable_instruction(instruction_id, enabled)
+            return {"success": True, "enabled": enabled}
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
 
     @app.get("/")
     async def index():

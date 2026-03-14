@@ -1,0 +1,53 @@
+# Instruction Manifest Schema
+# Each entry in manifest.yaml must conform to this structure.
+
+# --- Schema definition (documentation) ---
+
+# id: string (required)
+#   Unique identifier for the instruction. Snake_case or kebab-case.
+#   Used as primary key in the frontend and API.
+#   Example: "python-best-practices"
+
+# name: string (required)
+#   Human-readable display name shown in the UI.
+#   Example: "Python Best Practices"
+
+# description: string (required)
+#   One-sentence description of what this instruction covers.
+#   Shown in search results and tooltips.
+#   Example: "Python 3 best practices with typing, pytest, and modern tooling."
+
+# category: string (required)
+#   Top-level grouping. One of:
+#     - general     → Language-agnostic dev practices (DRY, SOLID, git, docs)
+#     - languages   → Language-specific instructions (python, typescript, rust, go...)
+#     - frontend    → Frontend frameworks & tooling (react, vue, tailwind...)
+#     - backend     → Backend frameworks & tooling (fastapi, express, django...)
+#     - tooling     → Dev tooling (docker, ci/cd, testing, MCP servers...)
+
+# tags: list[string] (required, min 1)
+#   Free-form keywords for search and filtering.
+#   Example: ["python", "typing", "pytest", "best-practices"]
+
+# filename: string (required)
+#   Relative path from the instructions/ directory to the .md file.
+#   Example: "languages/python-best-practices.md"
+
+# source_url: string (optional)
+#   URL of the original upstream file (for traceability).
+#   Omit for hand-written entries with no upstream source.
+#   Example: "https://raw.githubusercontent.com/PatrickJS/awesome-cursorrules/main/rules/python-cursorrules-prompt-file-best-practices/.cursorrules"
+
+# license: string (optional, default "CC0-1.0")
+#   SPDX license identifier of the source.
+#   All awesome-cursorrules entries are "CC0-1.0".
+#   Hand-written entries: "CC0-1.0" (same).
+#   Example: "CC0-1.0"
+
+# --- Allowed category values ---
+categories:
+  - general
+  - languages
+  - frontend
+  - backend
+  - tooling

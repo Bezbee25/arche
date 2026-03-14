@@ -1,5 +1,5 @@
 # arche
-
+ 
 **arche** is a development orchestrator that keeps your project context alive between LLM sessions.
 
 Most LLM CLIs (`claude`, `gemini`…) start fresh every time — no memory of past decisions, architecture choices, or completed work. arche solves this by maintaining a persistent **spec**, **architecture memory**, and **task queue** per track, and automatically feeding the full context to your LLM at every step.
@@ -162,6 +162,7 @@ arche track done      # track complete
 
 ```bash
 arche web             # starts at http://localhost:7331
+arche web-start       # initialize project (if needed) then start web UI
 ```
 
 ---

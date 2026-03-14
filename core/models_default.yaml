@@ -110,6 +110,9 @@ tools:
       devstral:
         id: "devstral-small"
         description: "Devstral Small — Mistral AI code model"
+      devstral2:
+        id: "devstral2"
+        description: "Devstral2 — Mistral AI large model"
     default_model: devstral
 
   copilot:

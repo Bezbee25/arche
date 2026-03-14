@@ -52,6 +52,9 @@ def main(ctx: typer.Context) -> None:
     if ctx.invoked_subcommand is None:
         from core.track_manager import PROJECT_FILE
         if PROJECT_FILE.exists():
+            # Load instructions to ensure they're available
+            from core.track_manager import load_instructions
+            load_instructions()
             from core.status import show_resume
             show_resume()
         else:
@@ -681,6 +684,52 @@ def web(
 
     import uvicorn
     uvicorn.run(uvicorn_app, host="0.0.0.0", port=port, log_level="warning")
+
+
+@app.command()
+def web_start(
+    port: int = typer.Option(7331, help="Port to run the web server on"),
+    no_browser: bool = typer.Option(False, "--no-browser", help="Don't open browser"),
+) -> None:
+    """Initialize project and start the web UI server."""
+    from core.track_manager import (
+        PROJECT_FILE, STORAGE_DIR, TRACKS_DIR,
+        load_project, save_project
+    )
+    from core.router import DEFAULT_MODELS
+    from core.model_registry import ModelRegistry
+    from pathlib import Path
+    import shutil
+    
+    # Check if project already exists
+    if not PROJECT_FILE.exists():
+        console.print("[bold cyan]arche web-start[/bold cyan] — Initializing project...")
+        
+        # Create storage directories
+        STORAGE_DIR.mkdir(exist_ok=True)
+        TRACKS_DIR.mkdir(parents=True, exist_ok=True)
+        
+        # Copy default models registry to storage if not present
+        _models_yaml = STORAGE_DIR / "models.yaml"
+        if not _models_yaml.exists():
+            _src = Path(__file__).parent / "core" / "models_default.yaml"
+            if _src.exists():
+                shutil.copy(_src, _models_yaml)
+        
+        # Create default project configuration
+        project = {
+            "name": Path.cwd().name,
+            "description": "",
+            "stack": "Python",
+            "models": DEFAULT_MODELS,
+        }
+        save_project(project)
+        console.print("[green]✓[/green] Project initialized with default settings.")
+    else:
+        console.print("[bold cyan]arche web-start[/bold cyan] — Project already exists, skipping init.")
+    
+    # Start the web server
+    web(port=port, no_browser=no_browser)
 
 
 # ── Plan subcommands ─────────────────────────────────────────────────────────

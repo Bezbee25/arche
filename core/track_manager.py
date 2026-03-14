@@ -65,8 +65,33 @@ def load_project() -> dict:
     return load_yaml(PROJECT_FILE)
 
 
+def load_instructions() -> dict:
+    """Load instructions manifest to ensure it exists and is ready."""
+    try:
+        from core.instruction_store import InstructionStore
+        store = InstructionStore()
+        manifest = store.load_manifest()
+        # Try to use pydantic dict() method, fall back to dict() if it fails
+        try:
+            return manifest.dict() if manifest else {"instructions": [], "version": "1.0.0"}
+        except AttributeError:
+            # If manifest doesn't have dict() method, return as dict
+            return dict(manifest) if manifest else {"instructions": [], "version": "1.0.0"}
+    except ImportError:
+        # If pydantic is not available, return empty manifest
+        return {"instructions": [], "version": "1.0.0"}
+
+
 def save_project(data: dict) -> None:
     save_yaml(PROJECT_FILE, data)
+    # Load and persist instructions if they exist
+    try:
+        from core.instruction_store import InstructionStore
+        store = InstructionStore()
+        store.load_manifest()  # Ensure manifest is loaded
+    except ImportError:
+        # pydantic not available, skip instructions loading
+        pass
 
 
 def get_current_track_id() -> Optional[str]:

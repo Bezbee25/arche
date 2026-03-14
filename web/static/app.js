@@ -39,6 +39,19 @@ const state = {
 
 let _termCounter = 0;
 
+// ── Utilities ─────────────────────────────────────────────────────────────
+function debounce(func, wait) {
+  let timeout;
+  return function executedFunction(...args) {
+    const later = () => {
+      clearTimeout(timeout);
+      func(...args);
+    };
+    clearTimeout(timeout);
+    timeout = setTimeout(later, wait);
+  };
+}
+
 // ── API helpers ────────────────────────────────────────────────────────────
 async function apiFetch(path, opts = {}) {
   try {
@@ -97,6 +110,7 @@ const api = {
 // ── DOM refs ───────────────────────────────────────────────────────────────
 const $ = (sel) => document.querySelector(sel);
 const $id = (id) => document.getElementById(id);
+const escapeHtml = (s) => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 
 // ── Scroll detection helpers ────────────────────────────────────────────────
 function setupScrollDetection() {
@@ -138,6 +152,13 @@ async function init() {
     if (ts && ts.theme) applyTheme(ts.theme);
   } catch (_) {}
   await refresh();
+  // Force le rendu initial du panel (refresh() skippe le panel si rien ne tourne)
+  if (state.selectedPlanId) {
+    await renderPanelFor(state.selectedPlanId);
+  } else if (state.plans.length > 0) {
+    state.selectedPlanId = state.plans[0].id;
+    await renderPanelFor(state.plans[0].id);
+  }
   setupScrollDetection();
   // Setup lock screen on page load
   await setupLockScreen();
@@ -147,7 +168,6 @@ async function init() {
 }
 
 async function refresh() {
-  // Skip panel refresh if user is actively scrolling (but always update sidebar)
   const [project, plans] = await Promise.all([api.getProject(), api.getTracks()]);
   if (project) {
     $id('project-name').textContent = project.name || 'unknown project';
@@ -161,6 +181,9 @@ async function refresh() {
     if (activePlan && !state.selectedPlanId) {
       state.selectedPlanId = activePlan.id;
     }
+
+    // Re-render le panel uniquement si une tâche tourne (évite le sursaut d'affichage)
+    if (!state.outputRunning) return;
 
     // Skip panel re-render if user is scrolling or has a dropdown open
     if (state._autoRefreshBlocked) return;
@@ -228,6 +251,13 @@ async function renderPanelFor(planId) {
   const plan = await api.getTrack(planId);
   if (!plan) return;
 
+  // Sauvegarde l'état éditeur du track précédent, restaure celui du nouveau
+  if (state._lastPlan && state._lastPlan.id !== planId) {
+    _saveEditorStateForTrack(state._lastPlan.id);
+    _restoreEditorStateForTrack(planId);
+    if ($id('editor-tab-bar')) { _renderTabBar(); _renderEditorHeaderActions(); }
+  }
+
   state._lastPlan = plan;
   renderPlanHeader(plan);
 
@@ -280,6 +310,8 @@ async function renderTabContent(plan, tab) {
     case 'spec': await renderSpec(plan.id); break;
     case 'sessions': renderSessions(plan); break;
     case 'output': renderOutputPane(); break;
+    case 'editor': await renderEditor(); break;
+    case 'instructions': await renderInstructions(); break;
   }
 }
 
@@ -792,6 +824,27 @@ function generateTasksForPhase(planId, phaseId) {
   });
 }
 
+function runArcheScan() {
+  state.outputText = '';
+  state.outputRunning = true;
+  _openOutputTerminal('scan', '⚡ Scan Architecture');
+  _setOutputHeader('▶ Scanning project architecture…');
+
+  _startStream(`/api/scan`, {
+    onMeta: (t) => { _setOutputHeader('▶ ' + t); },
+    onText: _appendOutput,
+    onDone: () => {
+      state.outputRunning = false;
+      _appendOutput('\n✓ Architecture scan complete\n');
+      // Refresh the architecture view
+      if (state.selectedPlanId) renderPanelFor(state.selectedPlanId);
+      // Refresh archi content
+      showArchiModal();
+    },
+    onError: () => { state.outputRunning = false; _appendOutput('\n⚠ Connection error\n'); },
+  });
+}
+
 async function uiDeleteTask(planId, taskId, taskTitle) {
   if (!confirm(`Delete task "${taskTitle}"?`)) return;
   await apiFetch(`/api/tracks/${planId}/tasks/${taskId}`, { method: 'DELETE' });
@@ -863,6 +916,452 @@ async function confirmNewPhase() {
   closePhaseModal();
   await api.createPhase(planId, name, desc);
   await renderPanelFor(planId);
+}
+
+// ── Instructions tab ────────────────────────────────────────────────────────
+async function renderInstructions() {
+  const pane = $id('tab-instructions');
+  pane.innerHTML = `
+    <div class="instructions-layout">
+      <div class="instructions-search">
+        <input type="text" id="instruction-search" placeholder="Search instructions..." />
+        <select id="instruction-category">
+          <option value="">All Categories</option>
+          <option value="general">General</option>
+          <option value="languages">Languages</option>
+          <option value="frontend">Frontend</option>
+          <option value="backend">Backend</option>
+          <option value="tooling">Tooling</option>
+        </select>
+        <input type="text" id="instruction-tags" placeholder="Filter by tags..." />
+      </div>
+      <div id="instruction-list"></div>
+    </div>
+  `;
+  
+  // Load and display instructions
+  await loadInstructions();
+  
+  // Set up event listeners
+  $id('instruction-search').addEventListener('input', debounce(loadInstructions, 300));
+  $id('instruction-category').addEventListener('change', loadInstructions);
+  $id('instruction-tags').addEventListener('input', debounce(loadInstructions, 300));
+}
+
+async function loadInstructions() {
+  const searchQuery = $id('instruction-search').value;
+  const category = $id('instruction-category').value;
+  const tags = $id('instruction-tags').value;
+  
+  const listContainer = $id('instruction-list');
+  listContainer.innerHTML = '<div class="loading">Loading instructions...</div>';
+  
+  try {
+    const params = new URLSearchParams();
+    if (searchQuery) params.append('q', searchQuery);
+    if (category) params.append('category', category);
+    if (tags) params.append('tags', tags);
+    
+    const response = await apiFetch(`/api/instructions/search?${params.toString()}`);
+    const { instructions } = await response.json();
+    
+    listContainer.innerHTML = '';
+    
+    if (instructions.length === 0) {
+      listContainer.innerHTML = '<div class="empty-state">No instructions found</div>';
+      return;
+    }
+    
+    instructions.forEach(instruction => {
+      const item = document.createElement('div');
+      item.className = 'instruction-item';
+      const tagsHtml = instruction.tags && instruction.tags.length > 0 
+        ? `<div class="instruction-tags">${instruction.tags.map(t => `<span class="tag">${escHtml(t)}</span>`).join(' ')}</div>`
+        : '';
+      item.innerHTML = `
+        <div class="instruction-header">
+          <input type="checkbox" class="instruction-checkbox" data-id="${instruction.id}" />
+          <div class="instruction-name">${escHtml(instruction.name)}</div>
+          <div class="instruction-category">${escHtml(instruction.category)}</div>
+        </div>
+        ${tagsHtml}
+        <div class="instruction-description">${escHtml(instruction.description || '')}</div>
+      `;
+      listContainer.appendChild(item);
+    });
+    
+    // Set up checkbox event listeners
+    document.querySelectorAll('.instruction-checkbox').forEach(checkbox => {
+      checkbox.addEventListener('change', function() {
+        const instructionId = this.dataset.id;
+        const enabled = this.checked;
+        apiFetch(`/api/instructions/store/enable/${instructionId}`, {
+          method: 'POST',
+          body: JSON.stringify({ enabled }),
+          headers: { 'Content-Type': 'application/json' }
+        });
+      });
+    });
+  } catch (error) {
+    console.error('Error loading instructions:', error);
+    $id('instruction-list').innerHTML = '<div class="error">Failed to load instructions</div>';
+  }
+}
+
+// ── Editor tab ─────────────────────────────────────────────────────────────
+const _expandedDirs = new Set(); // persists across re-renders
+let _cmEditor = null;
+let _autosaveTimer = null;
+let _autosaveEnabled = localStorage.getItem('editor-autosave') === 'true';
+let _editorTabs = [];      // { path, savedContent, draftContent, cursor, scroll, touched }
+let _activeTabPath = null;
+const _editorStateByTrack = new Map(); // trackId → { tabs, activeTabPath }
+
+function _saveEditorStateForTrack(trackId) {
+  if (!trackId) return;
+  if (_cmEditor && _activeTabPath) {
+    const t = _activeTab();
+    if (t) { t.draftContent = _cmEditor.getValue(); t.cursor = _cmEditor.getCursor(); t.scroll = _cmEditor.getScrollInfo(); }
+  }
+  _editorStateByTrack.set(trackId, { tabs: _editorTabs, activeTabPath: _activeTabPath });
+}
+
+function _restoreEditorStateForTrack(trackId) {
+  const saved = trackId ? _editorStateByTrack.get(trackId) : null;
+  _editorTabs = saved ? saved.tabs : [];
+  _activeTabPath = saved ? saved.activeTabPath : null;
+  if (_cmEditor) {
+    const tab = _activeTab();
+    if (tab) {
+      _cmEditor.setValue(tab.draftContent ?? tab.savedContent);
+      _cmEditor.setOption('mode', _getCodeMirrorMode(tab.path));
+      if (tab.cursor) _cmEditor.setCursor(tab.cursor);
+      if (tab.scroll) _cmEditor.scrollTo(tab.scroll.left, tab.scroll.top);
+    } else {
+      _cmEditor.setValue('');
+    }
+  }
+}
+
+function _activeTab() {
+  return _editorTabs.find(t => t.path === _activeTabPath) || null;
+}
+
+function _isTabDirty(tab) {
+  if (!tab) return false;
+  if (tab.path === _activeTabPath && _cmEditor)
+    return _cmEditor.getValue() !== tab.savedContent;
+  return tab.draftContent !== null && tab.draftContent !== tab.savedContent;
+}
+
+function _renderTabBar() {
+  const bar = $id('editor-tab-bar');
+  if (!bar) return;
+  bar.innerHTML = '';
+  for (const tab of _editorTabs) {
+    const dirty = _isTabDirty(tab);
+    const active = tab.path === _activeTabPath;
+    const name = tab.path.split('/').pop();
+    const el = document.createElement('div');
+    el.className = `editor-file-tab${active ? ' active' : ''}`;
+    el.title = tab.path;
+    el.innerHTML = `<span class="editor-file-tab-name">${escapeHtml(name)}${dirty ? '<span class="editor-tab-dirty">●</span>' : ''}</span><span class="editor-file-tab-close">×</span>`;
+    el.querySelector('.editor-file-tab-name').addEventListener('click', () => _switchFileTab(tab.path));
+    el.querySelector('.editor-file-tab-close').addEventListener('click', (e) => { e.stopPropagation(); _closeFileTab(tab.path); });
+    bar.appendChild(el);
+  }
+}
+
+function _switchFileTab(path) {
+  if (!_cmEditor || path === _activeTabPath) return;
+  const cur = _activeTab();
+  if (cur) {
+    cur.draftContent = _cmEditor.getValue();
+    cur.cursor = _cmEditor.getCursor();
+    cur.scroll = _cmEditor.getScrollInfo();
+  }
+  _activeTabPath = path;
+  const tab = _activeTab();
+  if (!tab) return;
+  _cmEditor.setValue(tab.draftContent ?? tab.savedContent);
+  _cmEditor.setOption('mode', _getCodeMirrorMode(path));
+  if (tab.cursor) _cmEditor.setCursor(tab.cursor);
+  if (tab.scroll) _cmEditor.scrollTo(tab.scroll.left, tab.scroll.top);
+  _cmEditor.focus();
+  _renderTabBar();
+  document.querySelectorAll('.file-tree-row.selected').forEach(r => r.classList.remove('selected'));
+  document.querySelector(`.file-tree-row[data-path="${CSS.escape(path)}"]`)?.classList.add('selected');
+}
+
+function _closeFileTab(path) {
+  const idx = _editorTabs.findIndex(t => t.path === path);
+  if (idx === -1) return;
+  _editorTabs.splice(idx, 1);
+  if (_activeTabPath === path) {
+    const next = _editorTabs[Math.min(idx, _editorTabs.length - 1)];
+    if (next && _cmEditor) {
+      _activeTabPath = next.path;
+      _cmEditor.setValue(next.draftContent ?? next.savedContent);
+      _cmEditor.setOption('mode', _getCodeMirrorMode(next.path));
+      if (next.cursor) _cmEditor.setCursor(next.cursor);
+      if (next.scroll) _cmEditor.scrollTo(next.scroll.left, next.scroll.top);
+      document.querySelectorAll('.file-tree-row.selected').forEach(r => r.classList.remove('selected'));
+      document.querySelector(`.file-tree-row[data-path="${CSS.escape(next.path)}"]`)?.classList.add('selected');
+    } else {
+      _activeTabPath = null;
+      if (_cmEditor) _cmEditor.setValue('');
+    }
+  }
+  _renderTabBar();
+  _renderEditorHeaderActions();
+}
+
+function _renderEditorHeaderActions() {
+  const headerActions = $id('plan-header-actions');
+  if (!headerActions) return;
+  if (!_activeTabPath) { headerActions.innerHTML = ''; return; }
+  headerActions.innerHTML = `
+    <span id="editor-save-status" class="editor-save-status"></span>
+    <label class="editor-autosave-label">
+      <input type="checkbox" id="editor-autosave-cb" ${_autosaveEnabled ? 'checked' : ''}>
+      Autosave
+    </label>
+    <button class="btn btn-sm" id="btn-save-file">Save</button>`;
+  $id('btn-save-file').addEventListener('click', saveFile);
+  $id('editor-autosave-cb').addEventListener('change', (e) => {
+    _autosaveEnabled = e.target.checked;
+    localStorage.setItem('editor-autosave', _autosaveEnabled);
+  });
+}
+
+function _getCodeMirrorMode(filePath) {
+  const ext = (filePath.split('.').pop() || '').toLowerCase();
+  const modes = {
+    py: 'python', js: 'javascript', ts: 'javascript',
+    css: 'css', html: 'htmlmixed', htm: 'htmlmixed',
+    yaml: 'yaml', yml: 'yaml',
+    md: 'markdown', markdown: 'markdown',
+    sh: 'shell', bash: 'shell',
+    json: { name: 'javascript', json: true },
+  };
+  return modes[ext] || 'text/plain';
+}
+
+async function renderEditor() {
+  if ($id('editor-browser')) {
+    // Already initialized — restore header and tab bar
+    _renderEditorHeaderActions();
+    _renderTabBar();
+    return;
+  }
+  const el = $id('plan-header-actions'); if (el) el.innerHTML = '';
+  const pane = $id('tab-editor');
+  pane.innerHTML = `
+    <div class="editor-layout">
+      <div class="editor-browser" id="editor-browser"></div>
+      <div class="editor-pane" id="editor-pane">
+        <div class="editor-tab-bar" id="editor-tab-bar"></div>
+        <div class="editor-cm-wrapper" id="editor-cm-wrapper">
+          <div class="empty-state">Select a file to edit.</div>
+        </div>
+      </div>
+    </div>`;
+  await renderFileBrowser('.');
+}
+
+async function renderFileBrowser(rootPath) {
+  const container = $id('editor-browser');
+  if (!container) return;
+  container.innerHTML = '<div class="empty-state">Loading...</div>';
+  try {
+    const data = await apiFetch(`/api/files/list?path=${encodeURIComponent(rootPath)}`);
+    container.innerHTML = '';
+    const header = document.createElement('div');
+    header.className = 'file-browser-header';
+    header.textContent = 'Files';
+    container.appendChild(header);
+    const tree = document.createElement('div');
+    tree.className = 'file-tree';
+    await _buildTreeNodes(tree, rootPath, data.entries, 0);
+    container.appendChild(tree);
+  } catch (e) {
+    container.innerHTML = `<div class="empty-state">Error: ${e.message}</div>`;
+  }
+}
+
+async function _buildTreeNodes(parent, dirPath, entries, depth) {
+  for (const entry of entries) {
+    const row = document.createElement('div');
+    row.className = 'file-tree-row';
+    row.style.paddingLeft = `${8 + depth * 14}px`;
+    row.dataset.path = entry.path;
+    row.dataset.type = entry.type;
+
+    const icon = document.createElement('span');
+    icon.className = 'file-tree-icon';
+
+    const label = document.createElement('span');
+    label.className = 'file-tree-label';
+    label.textContent = entry.name;
+
+    if (entry.type === 'dir') {
+      const expanded = _expandedDirs.has(entry.path);
+      icon.textContent = expanded ? '▾' : '▸';
+      row.classList.add('file-tree-dir');
+      row.append(icon, label);
+      parent.appendChild(row);
+
+      const childContainer = document.createElement('div');
+      childContainer.className = 'file-tree-children';
+      if (!expanded) childContainer.style.display = 'none';
+      parent.appendChild(childContainer);
+
+      if (expanded) {
+        await _loadDirChildren(childContainer, entry.path, depth + 1);
+      }
+
+      row.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        if (_expandedDirs.has(entry.path)) {
+          _expandedDirs.delete(entry.path);
+          icon.textContent = '▸';
+          childContainer.style.display = 'none';
+        } else {
+          _expandedDirs.add(entry.path);
+          icon.textContent = '▾';
+          childContainer.style.display = '';
+          if (!childContainer.hasChildNodes()) {
+            await _loadDirChildren(childContainer, entry.path, depth + 1);
+          }
+        }
+      });
+    } else {
+      icon.textContent = '·';
+      row.classList.add('file-tree-file');
+      row.append(icon, label);
+      parent.appendChild(row);
+      row.addEventListener('click', (e) => {
+        e.stopPropagation();
+        // Highlight selected
+        document.querySelectorAll('.file-tree-row.selected').forEach(r => r.classList.remove('selected'));
+        row.classList.add('selected');
+        openFile(entry.path);
+      });
+    }
+  }
+}
+
+async function _loadDirChildren(container, dirPath, depth) {
+  container.innerHTML = `<div class="file-tree-row" style="padding-left:${8 + depth * 14}px; color:var(--text-dim)">Loading...</div>`;
+  try {
+    const data = await apiFetch(`/api/files/list?path=${encodeURIComponent(dirPath)}`);
+    container.innerHTML = '';
+    await _buildTreeNodes(container, dirPath, data.entries, depth);
+  } catch (e) {
+    container.innerHTML = `<div class="file-tree-row" style="padding-left:${8 + depth * 14}px; color:var(--red)">${e.message}</div>`;
+  }
+}
+
+async function openFile(filePath) {
+  // Already open → switch
+  if (_editorTabs.find(t => t.path === filePath)) {
+    _switchFileTab(filePath);
+    return;
+  }
+
+  const data = await apiFetch(`/api/files/read?path=${encodeURIComponent(filePath)}`);
+  if (!data) { showToast(`Cannot read file: ${filePath}`); return; }
+
+  const curTab = _activeTab();
+  const curDirty = _isTabDirty(curTab);
+
+  if (curTab && !curDirty && !curTab.touched) {
+    // Replace current tab seulement si jamais modifié (ni dirty ni sauvé après modif)
+    curTab.path = filePath;
+    curTab.savedContent = data.content;
+    curTab.draftContent = null;
+    curTab.cursor = null;
+    curTab.scroll = null;
+    curTab.touched = false;
+    _activeTabPath = filePath;
+  } else {
+    // Fichier modifié (même si sauvé) ou jamais ouvert → nouvel onglet
+    if (curTab && _cmEditor) {
+      curTab.draftContent = _cmEditor.getValue();
+      curTab.cursor = _cmEditor.getCursor();
+      curTab.scroll = _cmEditor.getScrollInfo();
+    }
+    _editorTabs.push({ path: filePath, savedContent: data.content, draftContent: null, cursor: null, scroll: null, touched: false });
+    _activeTabPath = filePath;
+  }
+
+  const wrapper = $id('editor-cm-wrapper');
+  if (!_cmEditor) {
+    wrapper.innerHTML = '';
+    if (typeof CodeMirror !== 'undefined') {
+      _cmEditor = CodeMirror(wrapper, {
+        value: data.content,
+        mode: _getCodeMirrorMode(filePath),
+        theme: 'dracula',
+        lineNumbers: true,
+        lineWrapping: false,
+        tabSize: 2,
+        indentWithTabs: false,
+        autofocus: true,
+      });
+      _cmEditor.on('change', () => {
+        const t = _activeTab();
+        if (t) t.touched = true;
+        _renderTabBar();
+        if (!_autosaveEnabled) return;
+        clearTimeout(_autosaveTimer);
+        _autosaveTimer = setTimeout(saveFile, 1000);
+      });
+    } else {
+      wrapper.innerHTML = `<pre class="editor-preview">${escapeHtml(data.content)}</pre>`;
+    }
+  } else {
+    _cmEditor.setValue(data.content);
+    _cmEditor.setOption('mode', _getCodeMirrorMode(filePath));
+    _cmEditor.focus();
+  }
+
+  _renderTabBar();
+  _renderEditorHeaderActions();
+}
+
+async function saveFile() {
+  if (!_activeTabPath || !_cmEditor) return;
+  const tab = _activeTab();
+  const content = _cmEditor.getValue();
+  const statusEl = $id('editor-save-status');
+  try {
+    const res = await fetch('/api/files/write', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: _activeTabPath, content }),
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      console.error('saveFile failed', res.status, body);
+      if (statusEl) _showSaveStatus(statusEl, `Error ${res.status}: ${body}`, 'error');
+      return;
+    }
+    if (tab) { tab.savedContent = content; tab.draftContent = null; }
+    _renderTabBar();
+    if (statusEl) _showSaveStatus(statusEl, 'Saved', 'success');
+  } catch (e) {
+    console.error('saveFile error', e);
+    if (statusEl) _showSaveStatus(statusEl, `Error: ${e.message}`, 'error');
+  }
+}
+
+function _showSaveStatus(el, msg, type) {
+  el.textContent = msg;
+  el.className = `editor-save-status ${type}`;
+  el.style.opacity = '1';
+  clearTimeout(el._fadeTimeout);
+  el._fadeTimeout = setTimeout(() => { el.style.opacity = '0'; }, 2000);
 }
 
 // ── Spec tab ───────────────────────────────────────────────────────────────
@@ -1726,6 +2225,17 @@ function _connectTerminalWs(id, term, fitAddon, token = null) {
 function setupEventListeners() {
   setupTabs();
 
+  // Sidebar toggle
+  const sidebarToggle = $id('sidebar-toggle');
+  const sidebar = $id('sidebar');
+  const sidebarCollapsed = localStorage.getItem('sidebar-collapsed') === 'true';
+  if (sidebarCollapsed) { sidebar.classList.add('collapsed'); sidebarToggle.classList.add('collapsed'); }
+  sidebarToggle.addEventListener('click', () => {
+    const collapsed = sidebar.classList.toggle('collapsed');
+    sidebarToggle.classList.toggle('collapsed', collapsed);
+    localStorage.setItem('sidebar-collapsed', collapsed);
+  });
+
   // New plan button
   $id('btn-new-plan').addEventListener('click', () => {
     selectTrackType('feature');
@@ -1800,6 +2310,7 @@ function setupEventListeners() {
 
   // Archi modal
   $id('archi-close').addEventListener('click', closeArchiModal);
+  $id('archi-scan').addEventListener('click', runArcheScan);
   $id('modal-archi-overlay').addEventListener('click', (e) => {
     if (e.target === $id('modal-archi-overlay')) closeArchiModal();
   });
