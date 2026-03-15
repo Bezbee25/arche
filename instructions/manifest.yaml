@@ -1,0 +1,67 @@
+# Instruction Manifest
+# Schema: see manifest.schema.yaml
+# Format: list of instruction entries
+
+- id: python-best-practices
+  name: Python Best Practices
+  description: Python 3 best practices covering style, type hints, idioms, error handling, and tooling.
+  category: languages
+  tags: [python, pep8, typing, black, ruff, mypy, pytest, best-practices]
+  filename: dev/python-best-practices.md
+  license: CC0-1.0
+
+- id: javascript-best-practices
+  name: JavaScript / TypeScript Best Practices
+  description: Modern JS/TS best practices with TypeScript strict mode, async/await, ESLint, and Prettier.
+  category: languages
+  tags: [javascript, typescript, nodejs, async, eslint, prettier, best-practices]
+  filename: dev/javascript-best-practices.md
+  license: CC0-1.0
+
+- id: java-best-practices
+  name: Java Best Practices
+  description: Modern Java (11-21) best practices covering null safety, records, streams, concurrency, and testing.
+  category: languages
+  tags: [java, jvm, spring-boot, junit5, maven, gradle, records, best-practices]
+  filename: dev/java-best-practices.md
+  license: CC0-1.0
+
+- id: cpp-best-practices
+  name: C++ Best Practices
+  description: Modern C++20 best practices covering RAII, smart pointers, STL, templates, and concurrency.
+  category: languages
+  tags: [cpp, c++, c++20, raii, smart-pointers, cmake, clang-tidy, best-practices]
+  filename: dev/cpp-best-practices.md
+  license: CC0-1.0
+
+- id: c-best-practices
+  name: C Best Practices
+  description: C11/C17 best practices covering memory safety, buffer handling, error propagation, and portability.
+  category: languages
+  tags: [c, c11, c17, memory-safety, valgrind, gcc, clang, best-practices]
+  filename: dev/c-best-practices.md
+  license: CC0-1.0
+
+- id: go-best-practices
+  name: Go Best Practices
+  description: Idiomatic Go best practices covering error handling, interfaces, goroutines, and project layout.
+  category: languages
+  tags: [go, golang, goroutines, channels, context, errgroup, gofmt, golangci-lint, best-practices]
+  filename: dev/go-best-practices.md
+  license: CC0-1.0
+
+- id: rust-best-practices
+  name: Rust Best Practices
+  description: Rust best practices covering ownership, Result/Option, async/Tokio, and Clippy enforcement.
+  category: languages
+  tags: [rust, ownership, borrowing, async, tokio, clippy, cargo, best-practices]
+  filename: dev/rust-best-practices.md
+  license: CC0-1.0
+
+- id: sql-best-practices
+  name: SQL Best Practices
+  description: SQL best practices covering schema design, indexing, parameterized queries, transactions, and migrations.
+  category: tooling
+  tags: [sql, postgresql, mysql, schema-design, indexing, migrations, security, best-practices]
+  filename: dev/sql-best-practices.md
+  license: CC0-1.0

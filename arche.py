@@ -52,6 +52,9 @@ def main(ctx: typer.Context) -> None:
     if ctx.invoked_subcommand is None:
         from core.track_manager import PROJECT_FILE
         if PROJECT_FILE.exists():
+            # Load instructions to ensure they're available
+            from core.track_manager import load_instructions
+            load_instructions()
             from core.status import show_resume
             show_resume()
         else:
@@ -124,7 +127,8 @@ def _show_help() -> None:
     c.print(f"  {cmd('make install-pipx')}\n")
     c.print("  [dim]# In your project:[/dim]")
     c.print(f"  {cmd('arche init')}                        [dim]← project name, stack, LLM model choices[/dim]")
-    c.print(f"  {cmd('arche track new \"feat: JWT auth\"')}  [dim]← interactive spec Q&A → tasks generated[/dim]")
+    track_cmd = 'arche track new "feat: JWT auth"'
+    c.print(f"  {cmd(track_cmd)}  [dim]← interactive spec Q&A → tasks generated[/dim]")
     c.print()
     c.print("  [dim]# Work loop (repeat until done):[/dim]")
     c.print(f"  {cmd('arche task run')}       [dim]← runs current task with full context → LLM[/dim]")
@@ -137,11 +141,13 @@ def _show_help() -> None:
     c.print()
     c.print(Rule("Flow 2 — Multi-track (feature + urgent bug in parallel)", style="dim"))
     c.print()
-    c.print(f"  {cmd('arche track new \"feat: JWT auth\"')}    [dim]← track is ACTIVE[/dim]")
+    cmd_jwt = 'arche track new "feat: JWT auth"'
+    cmd_crash = 'arche track new "debug: crash login"'
+    c.print(f"  {cmd(cmd_jwt)}    [dim]← track is ACTIVE[/dim]")
     c.print(f"  {cmd('arche task run')}                       [dim]← working on feat[/dim]")
     c.print()
     c.print("  [dim]# Urgent bug comes in:[/dim]")
-    c.print(f"  {cmd('arche track new \"debug: crash login\"')} [dim]← feat PAUSED, debug ACTIVE[/dim]")
+    c.print(f"  {cmd(cmd_crash)} [dim]← feat PAUSED, debug ACTIVE[/dim]")
     c.print(f"  {cmd('arche task run')}                        [dim]← debug context loaded automatically[/dim]")
     c.print(f"  {cmd('arche task done')}  {cmd('arche track done')}   [dim]← bug fixed[/dim]")
     c.print()
@@ -153,8 +159,10 @@ def _show_help() -> None:
     c.print()
     c.print(Rule("Flow 3 — Debug", style="dim"))
     c.print()
-    c.print(f"  {cmd('arche track new \"debug: NullPointerException login\"')}")
-    c.print(f"  {cmd('arche debug \"NullPointerException at UserService.java:42\"')}")
+    cmd_npe = 'arche track new "debug: NullPointerException login"'
+    cmd_debug = 'arche debug "NullPointerException at UserService.java:42"'
+    c.print(f"  {cmd(cmd_npe)}")
+    c.print(f"  {cmd(cmd_debug)}")
     c.print(f"                   [dim]← analyses the error with full project context[/dim]")
     c.print(f"  {cmd('arche task run')}   [dim]← implements the fix[/dim]")
     c.print(f"  {cmd('arche task done')}  {cmd('arche track done')}")
@@ -252,27 +260,9 @@ def init() -> None:
         PROJECT_FILE, STORAGE_DIR, TRACKS_DIR,
         load_project, save_project
     )
-    from core.router import detect_available_clis, DEFAULT_MODELS
-
-    # Models available per CLI
-    CLI_MODELS: dict[str, list[tuple[str, str]]] = {
-        "claude": [
-            ("claude-opus-4-6",          "Opus 4.6    — most capable, best reasoning"),
-            ("claude-sonnet-4-6",        "Sonnet 4.6  — fast, strong, recommended"),
-            ("claude-haiku-4-5-20251001","Haiku 4.5   — fastest, cheapest"),
-        ],
-        "gemini": [
-            ("gemini-2.0-flash",         "Flash 2.0   — fast, 1M token context"),
-            ("gemini-2.0-pro",           "Pro 2.0     — most capable Gemini"),
-            ("gemini-1.5-pro",           "Pro 1.5     — large context fallback"),
-        ],
-        "codex": [
-            ("codex",                    "Codex       — OpenAI code model"),
-        ],
-        "vibe": [
-            ("devstral-small",           "Devstral Small — Mistral AI code model"),
-        ],
-    }
+    from core.router import DEFAULT_MODELS
+    from core.model_registry import ModelRegistry
+    import shutil as _shutil
 
     console.print("\n[bold cyan]arche init[/bold cyan] — Project setup\n")
 
@@ -285,43 +275,66 @@ def init() -> None:
     STORAGE_DIR.mkdir(exist_ok=True)
     TRACKS_DIR.mkdir(parents=True, exist_ok=True)
 
+    # Copy default models registry to storage if not present
+    _models_yaml = STORAGE_DIR / "models.yaml"
+    if not _models_yaml.exists():
+        import shutil as _sh
+        from pathlib import Path as _P
+        _src = _P(__file__).parent / "core" / "models_default.yaml"
+        if _src.exists():
+            _sh.copy(_src, _models_yaml)
+
     name = Prompt.ask("Project name", default=Path.cwd().name)
     description = Prompt.ask("Short description", default="")
     stack = Prompt.ask("Stack / main languages", default="Python")
 
-    # Detect available CLIs
-    available_clis = detect_available_clis()
+    # Detect available CLIs via registry
+    registry = ModelRegistry.load(STORAGE_DIR)
+    available_tool_aliases = registry.detect_available()
     console.print()
-    if available_clis:
-        console.print(f"[green]Detected CLIs:[/green] {', '.join(available_clis)}")
+    if available_tool_aliases:
+        console.print(f"[green]Detected CLIs:[/green] {', '.join(available_tool_aliases)}")
     else:
         console.print("[yellow]No LLM CLIs detected.[/yellow] Make sure claude/gemini/codex are in PATH.")
         console.print("[dim]Continuing with defaults — you can re-run arche init later.[/dim]")
 
-    # Build the list of selectable models from detected CLIs only
-    available_models: list[tuple[str, str]] = []
-    for cli in available_clis:
-        available_models.extend(CLI_MODELS.get(cli, []))
+    # Build list of selectable (spec, label) tuples from available tools
+    # spec = "tool/alias" format used in project.yaml
+    available_specs: list[tuple[str, str]] = []
+    for tool_alias in available_tool_aliases:
+        tool_models = registry.list_models(tool_alias)
+        tool_cfg = registry.get_tool(tool_alias) or {}
+        tool_desc = tool_cfg.get("description", tool_alias)
+        for model_alias, mdata in tool_models.items():
+            spec = f"{tool_alias}/{model_alias}"
+            label = f"{mdata.get('description', model_alias)}  [{tool_desc}]"
+            available_specs.append((spec, label))
+
+    valid_specs = {s for s, _ in available_specs}
 
     def pick_model(phase: str, desc: str) -> str:
-        default = DEFAULT_MODELS.get(phase, "claude-sonnet-4-6")
-        if not available_models:
-            return default
-
-        console.print(f"\n  [bold]{phase}[/bold] — {desc}")
-        for i, (model_id, label) in enumerate(available_models, 1):
-            marker = "[green]●[/green]" if model_id == default else " "
-            console.print(f"    {marker} [dim]{i}.[/dim] {model_id}  [dim]{label}[/dim]")
+        import questionary
+        default_spec = DEFAULT_MODELS.get(phase, "claude/sonnet")
+        if not available_specs:
+            return default_spec
 
         default_idx = next(
-            (i for i, (m, _) in enumerate(available_models, 1) if m == default),
-            1,
+            (i for i, (s, _) in enumerate(available_specs) if s == default_spec), 0
         )
-        while True:
-            raw = Prompt.ask(f"  Choose [1-{len(available_models)}]", default=str(default_idx))
-            if raw.isdigit() and 1 <= int(raw) <= len(available_models):
-                return available_models[int(raw) - 1][0]
-            console.print(f"  [red]Enter a number between 1 and {len(available_models)}.[/red]")
+
+        choices = [
+            questionary.Choice(title=f"{spec}  {label}", value=spec)
+            for spec, label in available_specs
+        ]
+
+        console.print(f"\n  [bold]{phase}[/bold] — {desc}")
+        result = questionary.select(
+            "  Modèle :",
+            choices=choices,
+            default=choices[default_idx],
+        ).ask()
+
+        return result if result else available_specs[default_idx][0]
 
     console.print("\n[bold]Model selection per phase[/bold] (Enter to keep default)\n")
 
@@ -343,7 +356,7 @@ def init() -> None:
         "description": description,
         "stack": stack,
         "models": models,
-        "available_clis": available_clis,
+        "available_clis": available_tool_aliases,
     }
 
     save_project(project_data)
@@ -420,6 +433,107 @@ def info() -> None:
     console.print()
     console.print(Rule(style="dim"))
     console.print()
+
+
+@app.command()
+def model(
+    phase: Optional[str] = typer.Argument(None, help="Phase to update (spec/plan/dev/debug/doc/review). Omit to show current config."),
+    spec:  Optional[str] = typer.Argument(None, help="Model spec to set, e.g. 'claude/sonnet'. Omit for interactive selection."),
+) -> None:
+    """Show or update model configuration per phase.
+
+    Examples:
+      arche model                    # show current config
+      arche model dev                # interactively pick model for 'dev' phase
+      arche model dev claude/sonnet  # set directly
+    """
+    _require_project()
+    from core.track_manager import STORAGE_DIR, load_project, save_project
+    from core.router import DEFAULT_MODELS
+    from core.model_registry import ModelRegistry
+
+    project  = load_project()
+    registry = ModelRegistry.load(STORAGE_DIR)
+    current  = project.get("models", {})
+
+    phase_descriptions = {
+        "spec":   "Spec / deep thinking     — used by arche spec qa + refine",
+        "plan":   "Planning / architecture  — used by arche track plan",
+        "dev":    "Code generation          — used by arche task run",
+        "debug":  "Debugging                — used by arche debug",
+        "doc":    "Documentation            — used by arche doc",
+        "review": "Code review              — used internally after task runs",
+    }
+
+    # ── Show mode ─────────────────────────────────────────────────────────────
+    if phase is None:
+        console.print("\n[bold]Model config[/bold]\n")
+        available = registry.detect_available()
+        for ph, desc in phase_descriptions.items():
+            cur = current.get(ph, DEFAULT_MODELS.get(ph, "—"))
+            mark = "[green]●[/green]" if ph in current else "[dim]○[/dim]"
+            console.print(f"  {mark} [bold]{ph:8}[/bold] [cyan]{cur}[/cyan]  [dim]{desc}[/dim]")
+        console.print()
+        console.print(f"  [dim]Available CLIs: {', '.join(available) if available else 'none detected'}[/dim]")
+        console.print(f"  [dim]Registry: {STORAGE_DIR / 'models.yaml'}[/dim]")
+        console.print()
+        console.print("  Run [bold]arche model <phase>[/bold] to update, e.g. [bold]arche model dev claude/sonnet[/bold]")
+        console.print()
+        return
+
+    # ── Validate phase ─────────────────────────────────────────────────────────
+    valid_phases = list(phase_descriptions.keys())
+    if phase not in valid_phases:
+        console.print(f"[red]Unknown phase '{phase}'.[/red] Valid phases: {', '.join(valid_phases)}")
+        raise typer.Exit(1)
+
+    # ── Build available specs ──────────────────────────────────────────────────
+    available_tool_aliases = registry.detect_available()
+    available_specs: list[tuple[str, str]] = []
+    for tool_alias in available_tool_aliases:
+        tool_models = registry.list_models(tool_alias)
+        tool_cfg    = registry.get_tool(tool_alias) or {}
+        tool_desc   = tool_cfg.get("description", tool_alias)
+        for model_alias, mdata in tool_models.items():
+            s     = f"{tool_alias}/{model_alias}"
+            label = f"{mdata.get('description', model_alias)}  [{tool_desc}]"
+            available_specs.append((s, label))
+
+    valid_specs = {s for s, _ in available_specs}
+
+    # ── Direct set mode ────────────────────────────────────────────────────────
+    if spec is not None:
+        if spec not in valid_specs:
+            console.print(f"[red]Unknown spec '{spec}'.[/red]")
+            if available_specs:
+                console.print("  Available:")
+                for s, label in available_specs:
+                    console.print(f"    {s}  [dim]{label}[/dim]")
+            raise typer.Exit(1)
+        current[phase] = spec
+        project["models"] = current
+        save_project(project)
+        console.print(f"[green]✓[/green] [bold]{phase}[/bold] → [cyan]{spec}[/cyan]")
+        return
+
+    # ── Interactive mode ───────────────────────────────────────────────────────
+    default_spec = current.get(phase, DEFAULT_MODELS.get(phase, "claude/sonnet"))
+    console.print(f"\n  [bold]{phase}[/bold] — {phase_descriptions[phase]}")
+    console.print(f"  Current: [cyan]{default_spec}[/cyan]\n")
+    for s, label in available_specs:
+        marker = "[green]●[/green]" if s == default_spec else " "
+        console.print(f"    {marker} {s}  [dim]{label}[/dim]")
+    console.print()
+
+    while True:
+        raw = Prompt.ask("  Model spec", default=default_spec).strip()
+        if raw in valid_specs:
+            current[phase] = raw
+            project["models"] = current
+            save_project(project)
+            console.print(f"[green]✓[/green] [bold]{phase}[/bold] → [cyan]{raw}[/cyan]")
+            return
+        console.print(f"  [red]Unknown spec '{raw}'. Choose from the list above.[/red]")
 
 
 @app.command()
@@ -570,6 +684,52 @@ def web(
 
     import uvicorn
     uvicorn.run(uvicorn_app, host="0.0.0.0", port=port, log_level="warning")
+
+
+@app.command()
+def web_start(
+    port: int = typer.Option(7331, help="Port to run the web server on"),
+    no_browser: bool = typer.Option(False, "--no-browser", help="Don't open browser"),
+) -> None:
+    """Initialize project and start the web UI server."""
+    from core.track_manager import (
+        PROJECT_FILE, STORAGE_DIR, TRACKS_DIR,
+        load_project, save_project
+    )
+    from core.router import DEFAULT_MODELS
+    from core.model_registry import ModelRegistry
+    from pathlib import Path
+    import shutil
+    
+    # Check if project already exists
+    if not PROJECT_FILE.exists():
+        console.print("[bold cyan]arche web-start[/bold cyan] — Initializing project...")
+        
+        # Create storage directories
+        STORAGE_DIR.mkdir(exist_ok=True)
+        TRACKS_DIR.mkdir(parents=True, exist_ok=True)
+        
+        # Copy default models registry to storage if not present
+        _models_yaml = STORAGE_DIR / "models.yaml"
+        if not _models_yaml.exists():
+            _src = Path(__file__).parent / "core" / "models_default.yaml"
+            if _src.exists():
+                shutil.copy(_src, _models_yaml)
+        
+        # Create default project configuration
+        project = {
+            "name": Path.cwd().name,
+            "description": "",
+            "stack": "Python",
+            "models": DEFAULT_MODELS,
+        }
+        save_project(project)
+        console.print("[green]✓[/green] Project initialized with default settings.")
+    else:
+        console.print("[bold cyan]arche web-start[/bold cyan] — Project already exists, skipping init.")
+    
+    # Start the web server
+    web(port=port, no_browser=no_browser)
 
 
 # ── Plan subcommands ─────────────────────────────────────────────────────────

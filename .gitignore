@@ -2,3 +2,12 @@
 .claude/
 .arche-storage/
 web/__pycache__/
+.git/
+__pycache__/
+core/__pycache__/
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+venv/
+.venv/

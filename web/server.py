@@ -19,6 +19,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.websockets import WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
+from models.instruction import Instruction
+
 from core.track_manager import (
     get_active_track,
     get_track,
@@ -36,17 +38,21 @@ from core.track_manager import (
     update_phase,
     delete_phase,
     _DEFAULT_PHASE_ID,
+    STORAGE_DIR,
 )
+from core.instruction_store import InstructionStore
 from core.task_engine import (
     add_task,
     block_task,
     complete_task,
+    get_current_task,
     get_task_stats,
     load_tasks,
     select_task,
     start_task,
     switch_task,
     update_task,
+    STATUS_TODO,
 )
 from core.session_logger import get_session_log, list_sessions, log
 from web.ws_terminal import TerminalManager
@@ -106,10 +112,18 @@ class BulkTaskRunRequest(BaseModel):
     task_ids: list[str]  # List of task IDs to execute in order
     comment: str = ""
     auto_done: bool = True
+    instructions: str = ""  # Comma-separated list of instruction IDs
 
 class TemplateGenerationRequest(BaseModel):
     description: str
     subtypes: list[str] = []
+
+class PasswordRequest(BaseModel):
+    password: str
+
+class WriteFileRequest(BaseModel):
+    path: str
+    content: str
 
 
 def _parse_claude_json_line(raw: str) -> str:
@@ -199,8 +213,19 @@ def _build_phases_detail(track_id: str) -> list[dict]:
 # Token → init_cmd mapping for interactive terminal sessions
 _pending_terminal_inits: dict[str, str] = {}
 
+# Track active run processes per track_id (stores Process objects)
+_active_runs: dict[str, list] = {}
+# Tracks for which a stop was requested (bulk loop guard)
+_stop_requested: set[str] = set()
+# Process IDs that were intentionally stopped via stop-run (suppress error messages)
+_intentionally_stopped: set = set()
+
 
 def create_app() -> FastAPI:
+    # Ensure instructions are loaded before app starts
+    from core.track_manager import load_instructions
+    load_instructions()
+    
     app = FastAPI(title="arche", docs_url="/api/docs")
 
     terminal_manager = TerminalManager()
@@ -223,6 +248,142 @@ def create_app() -> FastAPI:
         project["protected_paths"] = [p.strip() for p in paths if p.strip()]
         save_project(project)
         return {"protected_paths": project["protected_paths"]}
+
+    @app.get("/api/config/tools")
+    def get_config_tools():
+        from core.model_registry import ModelRegistry
+        registry = ModelRegistry.load(STORAGE_DIR)
+        available = set(registry.detect_available())
+        result = {}
+        for alias in registry.list_tools():
+            tool = registry.get_tool(alias) or {}
+            models = registry.list_models(alias)
+            result[alias] = {
+                "binary": tool.get("binary", alias),
+                "description": tool.get("description", alias),
+                "available": alias in available,
+                "models": {
+                    m_alias: {
+                        "id": mdata.get("id", m_alias),
+                        "description": mdata.get("description", m_alias),
+                    }
+                    for m_alias, mdata in models.items()
+                },
+                "default_model": tool.get("default_model"),
+            }
+        return {"tools": result}
+
+    @app.get("/api/settings/models")
+    def get_models_config():
+        from core.model_registry import ModelRegistry
+        from core.router import DEFAULT_MODELS
+        registry = ModelRegistry.load(STORAGE_DIR)
+        available = registry.detect_available()
+        tools_info: dict = {}
+        for tool_alias in available:
+            tool = registry.get_tool(tool_alias) or {}
+            models = registry.list_models(tool_alias)
+            tools_info[tool_alias] = {
+                "description": tool.get("description", tool_alias),
+                "models": {
+                    alias: mdata.get("description", alias)
+                    for alias, mdata in models.items()
+                },
+            }
+        project = load_project() or {}
+        current = project.get("models", {})
+        phases = list(DEFAULT_MODELS.keys())
+        return {"tools": tools_info, "current": current, "phases": phases, "defaults": DEFAULT_MODELS}
+
+    @app.patch("/api/settings/models")
+    def patch_models_config(req: dict):
+        project = load_project() or {}
+        project["models"] = req.get("models", {})
+        save_project(project)
+        return {"ok": True, "models": project["models"]}
+
+    @app.get("/api/scan")
+    async def stream_scan():
+        """Stream architecture scan via SSE."""
+        from core.scanner import run_scan as core_run_scan
+        from core.track_manager import load_project
+        
+        # Check if project exists
+        project = load_project()
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not initialized. Run 'arche init' first.")
+        
+        def scan_generator():
+            try:
+                # Run the scan and capture output
+                import io
+                import sys
+                from contextlib import redirect_stdout, redirect_stderr
+                
+                # Capture output
+                output = io.StringIO()
+                error = io.StringIO()
+                
+                with redirect_stdout(output), redirect_stderr(error):
+                    core_run_scan()
+                
+                # Yield the captured output
+                full_output = output.getvalue() + error.getvalue()
+                if full_output:
+                    for line in full_output.split('\n'):
+                        if line.strip():
+                            yield f"data: {line}\n\n"
+                else:
+                    yield "data: ✓ Architecture scan completed\n\n"
+                
+                # Signal completion
+                yield "data: __DONE__\n\n"
+                    
+            except Exception as e:
+                yield f"data: ⚠ Error: {str(e)}\n\n"
+                yield "data: __DONE__\n\n"
+        
+        return StreamingResponse(scan_generator(), media_type="text/event-stream")
+
+    # ── Password Lock Endpoints ─────────────────────────────────────────────────
+    @app.get("/api/settings/password")
+    def get_password_status():
+        project = load_project() or {}
+        has_password = "password_lock" in project and project["password_lock"]
+        return {"has_password": has_password, "is_locked": False}
+
+    @app.post("/api/settings/password/setup")
+    def setup_password(req: PasswordRequest):
+        if not req.password or len(req.password) < 4:
+            raise HTTPException(status_code=400, detail="Password must be at least 4 characters")
+        project = load_project() or {}
+        project["password_lock"] = req.password
+        save_project(project)
+        return {"ok": True}
+
+    @app.post("/api/settings/password/verify")
+    def verify_password(req: PasswordRequest):
+        project = load_project() or {}
+        stored_password = project.get("password_lock", "")
+        is_valid = stored_password == req.password
+        return {"ok": is_valid}
+
+    @app.patch("/api/settings/password")
+    def update_password(req: PasswordRequest):
+        if not req.password or len(req.password) < 4:
+            raise HTTPException(status_code=400, detail="Password must be at least 4 characters")
+        project = load_project() or {}
+        project["password_lock"] = req.password
+        save_project(project)
+        return {"ok": True, "has_password": True}
+
+    @app.post("/api/settings/password/clear")
+    def clear_password():
+        project = load_project() or {}
+        if "password_lock" in project:
+            del project["password_lock"]
+            save_project(project)
+        return {"ok": True}
 
     @app.get("/api/settings/theme")
     def get_theme():
@@ -773,8 +934,10 @@ def create_app() -> FastAPI:
         return task
 
     @app.get("/api/tracks/{track_id}/tasks/{task_id}/run")
-    async def stream_task_run(track_id: str, task_id: str, comment: str = "", auto_done: bool = True):
+    async def stream_task_run(track_id: str, task_id: str, comment: str = "", auto_done: bool = True, instructions: str = ""):
         """Switch to task then stream LLM output via SSE."""
+        # Parse selected instruction IDs from comma-separated string
+        selected_instruction_ids = [i.strip() for i in instructions.split(",") if i.strip()] if instructions else []
         from core.context import build_task_prompt, extract_archi_notes, append_archi
         from core.router import (
             _build_command,
@@ -805,7 +968,11 @@ def create_app() -> FastAPI:
         cmd = _build_command(cli, model, None, tools)
         if cli == "claude":
             cmd += ["--output-format", "stream-json", "--verbose"]
-        prompt = build_task_prompt(track_id, plan, comment=comment)
+        prompt = build_task_prompt(track_id, plan, comment=comment, selected_instruction_ids=selected_instruction_ids)
+
+        if selected_instruction_ids:
+            from core.session_logger import log_instructions_used
+            log_instructions_used(track_id, selected_instruction_ids)
 
         async def generate():
             output_lines: list[str] = []
@@ -820,6 +987,10 @@ def create_app() -> FastAPI:
                     stderr=asyncio.subprocess.STDOUT,  # merge stderr → no deadlock
                     limit=10 * 1024 * 1024,  # 10 MB — Claude JSON lines can be large
                 )
+                # Register for stop-run
+                if track_id not in _active_runs:
+                    _active_runs[track_id] = []
+                _active_runs[track_id].append(proc)
                 print(f"[stream_task_run] Subprocess created, writing {len(prompt)} bytes to stdin")
                 proc.stdin.write(prompt.encode())
                 await proc.stdin.drain()  # flush buffer to the pipe
@@ -828,6 +999,11 @@ def create_app() -> FastAPI:
 
                 line_count = 0
                 while True:
+                    # Check if stop was requested during streaming
+                    if track_id in _stop_requested:
+                        print(f"[stream_task_run] Stop requested, breaking read loop")
+                        break
+
                     if cli == "claude":
                         line = await proc.stdout.readline()
                         if not line:
@@ -858,10 +1034,18 @@ def create_app() -> FastAPI:
                 await proc.wait()
                 print(f"[stream_task_run] Process exited with code {proc.returncode}")
 
-                if not output_lines:
-                    yield f"data: ⚠ Subprocess exited with no output (code {proc.returncode})\n\n"
-                elif proc.returncode != 0:
-                    yield f"data: ⚠ Subprocess exited with code {proc.returncode}\n\n"
+                # Check if process was intentionally stopped via stop-run
+                was_intentional = id(proc) in _intentionally_stopped
+                if was_intentional:
+                    _intentionally_stopped.discard(id(proc))
+                    print(f"[stream_task_run] Process stopped intentionally (via stop-run)")
+
+                # Only show exit code errors if not intentionally stopped
+                if not was_intentional:
+                    if not output_lines:
+                        yield f"data: ⚠ Subprocess exited with no output (code {proc.returncode})\n\n"
+                    elif proc.returncode != 0:
+                        yield f"data: ⚠ Subprocess exited with code {proc.returncode}\n\n"
 
                 output_str = "".join(output_lines)
                 notes = extract_archi_notes(output_str)
@@ -878,6 +1062,17 @@ def create_app() -> FastAPI:
                 traceback.print_exc()
                 yield f"data: ⚠ Error: {e}\n\n"
             finally:
+                # Unregister process
+                try:
+                    if proc in _active_runs.get(track_id, []):
+                        _active_runs[track_id].remove(proc)
+                except Exception:
+                    pass
+                # Clean up intentionally stopped flag
+                try:
+                    _intentionally_stopped.discard(id(proc))
+                except Exception:
+                    pass
                 yield "data: __DONE__\n\n"
 
         return StreamingResponse(
@@ -888,7 +1083,8 @@ def create_app() -> FastAPI:
 
     @app.get("/api/tracks/{track_id}/tasks/{task_id}/prepare-run")
     async def prepare_task_run(
-        track_id: str, task_id: str, comment: str = "", auto_done: bool = True
+        track_id: str, task_id: str, comment: str = "", auto_done: bool = True, 
+        instructions: str = ""
     ):
         """Prepare a task for interactive PTY execution.
 
@@ -896,6 +1092,8 @@ def create_app() -> FastAPI:
         a one-time token that the /ws/terminal WebSocket will use to inject
         the command into a real PTY shell.
         """
+        # Parse selected instruction IDs from comma-separated string
+        selected_instruction_ids = [i.strip() for i in instructions.split(",") if i.strip()] if instructions else []
         from core.context import build_task_prompt
         from core.router import (
             _build_command,
@@ -926,7 +1124,11 @@ def create_app() -> FastAPI:
 
         tools = get_tools_for_phase(phase, plan)
         cmd = _build_command(cli, model, None, tools)
-        prompt = build_task_prompt(track_id, plan, comment=comment)
+        prompt = build_task_prompt(track_id, plan, comment=comment, selected_instruction_ids=selected_instruction_ids)
+
+        if selected_instruction_ids:
+            from core.session_logger import log_instructions_used
+            log_instructions_used(track_id, selected_instruction_ids)
 
         # Use storage/tracks/{track_id}/tmp/ to stay within the project directory
         from core.track_manager import TRACKS_DIR
@@ -936,12 +1138,46 @@ def create_app() -> FastAPI:
         prompt_file = tmp_dir / f"prompt-{task_id[:8]}-{uuid.uuid4().hex[:8]}.txt"
         prompt_file.write_text(prompt, encoding="utf-8")
 
+        if cli == "claude":
+            cmd += ["--output-format", "stream-json", "--verbose"]
+
         script_file = tmp_dir / f"run-{uuid.uuid4().hex[:8]}.sh"
         auto_done_line = "[ $_EXIT -eq 0 ] && arche task done 2>/dev/null && echo '\\n✓ Task marked as done.'" if auto_done else ""
+        cmd_display = ' '.join(shlex.quote(c) for c in cmd)
+
+        # Inline Python parser: extracts readable text from claude's stream-json NDJSON
+        _PARSER = (
+            "import sys,json\n"
+            "for line in sys.stdin:\n"
+            " line=line.strip()\n"
+            " if not line: continue\n"
+            " try:\n"
+            "  o=json.loads(line)\n"
+            "  t=o.get('type','')\n"
+            "  if t=='assistant':\n"
+            "   for b in o.get('message',o).get('content',[]):\n"
+            "    if not isinstance(b,dict): continue\n"
+            "    if b.get('type')=='text': sys.stdout.write(b['text']); sys.stdout.flush()\n"
+            "    elif b.get('type')=='tool_use':\n"
+            "     n=b.get('name','?'); i=b.get('input',{})\n"
+            "     v=next(iter(i.values()),'') if i else ''\n"
+            "     print(f'[{n}: {v}]',flush=True)\n"
+            "  elif t=='result' and o.get('is_error'): print(f'\\n⚠ {o.get(\"result\",\"\")}',flush=True)\n"
+            " except: sys.stdout.write(line+'\\n'); sys.stdout.flush()\n"
+        )
+
+        if cli == "claude":
+            run_line = f"{cmd_display} < {shlex.quote(str(prompt_file))} | python3 -u -c {shlex.quote(_PARSER)}"
+            exit_line = "_EXIT=${PIPESTATUS[0]}\n"
+        else:
+            run_line = f"{cmd_display} < {shlex.quote(str(prompt_file))}"
+            exit_line = "_EXIT=$?\n"
+
         script_file.write_text(
             "#!/bin/bash\n"
-            f"{' '.join(shlex.quote(c) for c in cmd)} < {shlex.quote(str(prompt_file))}\n"
-            "_EXIT=$?\n"
+            f"echo '[arche] cmd: {cmd_display}'\n"
+            f"{run_line}\n"
+            f"{exit_line}"
             f"rm -f {shlex.quote(str(prompt_file))}\n"
             f"rm -f {shlex.quote(str(script_file))}\n"
             f"{auto_done_line}\n",
@@ -951,7 +1187,7 @@ def create_app() -> FastAPI:
         init_cmd = f"bash {shlex.quote(str(script_file))}"
 
         token = str(uuid.uuid4())
-        _pending_terminal_inits[token] = init_cmd
+        _pending_terminal_inits[token] = {"init_cmd": init_cmd, "track_id": track_id}
 
         return {"token": token, "task_title": task_obj.get("title", "")}
 
@@ -1004,75 +1240,166 @@ def create_app() -> FastAPI:
             cmd_base += ["--output-format", "stream-json", "--verbose"]
 
         async def generate_bulk():
-            for task_num, task_id in enumerate(valid_task_ids, 1):
-                # Update current task
-                switch_task(track_id, task_id)
-                start_task(track_id, task_id)
+            # Initialize the active runs list for this track
+            if track_id not in _active_runs:
+                _active_runs[track_id] = []
+            _stop_requested.discard(track_id)  # clear any previous stop signal
 
-                task = task_map[task_id]
-                prompt = build_task_prompt(track_id, plan, comment=req.comment)
+            try:
+                for task_num, task_id in enumerate(valid_task_ids, 1):
+                    # Check if stop was requested
+                    if track_id in _stop_requested:
+                        yield f"data: ⚠ Run stopped by user\n\n"
+                        return
+                    # Check if we've been cancelled
+                    try:
+                        await asyncio.sleep(0)
+                    except asyncio.CancelledError:
+                        yield f"data: ⚠ Run cancelled\n\n"
+                        return
 
-                yield f"data: __TASK_START__ {task_num}/{len(valid_task_ids)} {task['title']}\n\n"
+                    # Update current task
+                    switch_task(track_id, task_id)
+                    start_task(track_id, task_id)
 
-                output_lines: list[str] = []
-                try:
-                    proc = await asyncio.create_subprocess_exec(
-                        *cmd_base,
-                        stdin=asyncio.subprocess.PIPE,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.STDOUT,
-                        limit=10 * 1024 * 1024,
-                    )
-                    proc.stdin.write(prompt.encode())
-                    await proc.stdin.drain()
-                    proc.stdin.close()
+                    task = task_map[task_id]
+                    # Parse selected instruction IDs from comma-separated string
+                    selected_instruction_ids = [i.strip() for i in req.instructions.split(",") if i.strip()] if req.instructions else []
+                    prompt = build_task_prompt(track_id, plan, comment=req.comment, selected_instruction_ids=selected_instruction_ids)
 
-                    while True:
-                        if cli == "claude":
-                            line = await proc.stdout.readline()
-                            if not line:
-                                break
-                            raw = line.decode("utf-8", errors="replace")
-                            text = _parse_claude_json_line(raw)
-                            if text:
-                                output_lines.append(text)
-                                sse_lines = text.split("\n")
-                                sse = "\n".join(f"data: {l}" for l in sse_lines)
-                                yield f"{sse}\n\n"
-                        else:
-                            chunk = await proc.stdout.read(4096)
-                            if not chunk:
-                                break
-                            text = chunk.decode("utf-8", errors="replace")
-                            output_lines.append(text)
-                            lines = text.split("\n")
-                            sse = "\n".join(f"data: {l}" for l in lines)
-                            yield f"{sse}\n\n"
+                    if selected_instruction_ids:
+                        from core.session_logger import log_instructions_used
+                        log_instructions_used(track_id, selected_instruction_ids)
 
-                    await proc.wait()
+                    yield f"data: __TASK_START__ {task_num}/{len(valid_task_ids)} {task['title']}\n\n"
 
-                    output_str = "".join(output_lines)
-                    notes = extract_archi_notes(output_str)
-                    if notes:
-                        append_archi(track_id, notes)
+                    output_lines: list[str] = []
+                    try:
+                        proc = await asyncio.create_subprocess_exec(
+                            *cmd_base,
+                            stdin=asyncio.subprocess.PIPE,
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.STDOUT,
+                            limit=10 * 1024 * 1024,
+                        )
+                        # Track the subprocess
+                        _active_runs[track_id].append(proc)
+                        
+                        try:
+                            proc.stdin.write(prompt.encode())
+                            await proc.stdin.drain()
+                            proc.stdin.close()
 
-                    # Auto-done — save archi notes as task notes so next task sees findings
-                    if req.auto_done:
-                        task_notes = notes[:600].strip() if notes else ""
-                        complete_task(track_id, task_id, task_notes)
+                            while True:
+                                # Check if stop was requested during streaming
+                                if track_id in _stop_requested:
+                                    print(f"[run_bulk] Stop requested in task {task_num}, breaking read loop")
+                                    break
 
-                    yield f"data: __TASK_DONE__\n\n"
+                                if cli == "claude":
+                                    line = await proc.stdout.readline()
+                                    if not line:
+                                        break
+                                    raw = line.decode("utf-8", errors="replace")
+                                    text = _parse_claude_json_line(raw)
+                                    if text:
+                                        output_lines.append(text)
+                                        sse_lines = text.split("\n")
+                                        sse = "\n".join(f"data: {l}" for l in sse_lines)
+                                        yield f"{sse}\n\n"
+                                else:
+                                    chunk = await proc.stdout.read(4096)
+                                    if not chunk:
+                                        break
+                                    text = chunk.decode("utf-8", errors="replace")
+                                    output_lines.append(text)
+                                    lines = text.split("\n")
+                                    sse = "\n".join(f"data: {l}" for l in lines)
+                                    yield f"{sse}\n\n"
 
-                except Exception as e:
-                    yield f"data: ⚠ Error in task {task_num}: {e}\n\n"
+                            await proc.wait()
 
-            yield f"data: __BULK_DONE__ {len(valid_task_ids)} tasks completed\n\n"
+                            output_str = "".join(output_lines)
+                            notes = extract_archi_notes(output_str)
+                            if notes:
+                                append_archi(track_id, notes)
+
+                            # Auto-done — save archi notes as task notes so next task sees findings
+                            if req.auto_done:
+                                task_notes = notes[:600].strip() if notes else ""
+                                complete_task(track_id, task_id, task_notes)
+
+                            yield f"data: __TASK_DONE__\n\n"
+                        finally:
+                            # Remove from active runs when done
+                            if proc in _active_runs.get(track_id, []):
+                                _active_runs[track_id].remove(proc)
+
+                    except asyncio.CancelledError:
+                        yield f"data: ⚠ Task {task_num} cancelled\n\n"
+                        return
+                    except Exception as e:
+                        yield f"data: ⚠ Error in task {task_num}: {e}\n\n"
+
+                yield f"data: __BULK_DONE__ {len(valid_task_ids)} tasks completed\n\n"
+            finally:
+                # Clean up
+                if track_id in _active_runs:
+                    _active_runs[track_id] = []
+                _stop_requested.discard(track_id)
+
 
         return StreamingResponse(
             generate_bulk(),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
+
+    @app.post("/api/tracks/{track_id}/stop-run")
+    async def stop_run(track_id: str):
+        """Stop all active run processes for a track."""
+        import signal
+
+        count = 0
+
+        # Signal bulk loop to stop
+        _stop_requested.add(track_id)
+
+        # Stop PTY processes via TerminalManager
+        pty_count = terminal_manager.stop_track_processes(track_id)
+        count += pty_count
+
+        # Stop async subprocess processes
+        if track_id in _active_runs:
+            processes = _active_runs[track_id]
+            for proc in processes:
+                if proc and proc.returncode is None:
+                    try:
+                        # Mark as intentionally stopped before terminating
+                        _intentionally_stopped.add(id(proc))
+                        proc.terminate()
+                        try:
+                            await asyncio.wait_for(proc.wait(), timeout=2)
+                        except asyncio.TimeoutError:
+                            proc.kill()
+                            await proc.wait()
+                        count += 1
+                    except Exception as e:
+                        print(f"[stop_run] Error terminating process: {e}")
+            _active_runs[track_id] = []
+
+        # Revert IN_PROGRESS task back to TODO
+        current_task = get_current_task(track_id)
+        if current_task and current_task.get("status") == "IN_PROGRESS":
+            update_task(track_id, current_task["id"], {"status": STATUS_TODO})
+
+        return {"status": "stopped", "count": count}
+
+    @app.get("/api/tracks/{track_id}/run-status")
+    def get_run_status(track_id: str):
+        """Check if a track has an active run."""
+        active = len(_active_runs.get(track_id, [])) > 0
+        return {"running": active}
 
     @app.get("/api/archi")
     def get_archi():
@@ -1289,13 +1616,252 @@ def create_app() -> FastAPI:
 
     @app.websocket("/ws/terminal")
     async def terminal_ws(websocket: WebSocket, token: str = None, cols: int = 220, rows: int = 50):
-        init_cmd = _pending_terminal_inits.pop(token, None) if token else None
-        await terminal_manager.handle(websocket, init_cmd=init_cmd, cols=cols, rows=rows)
+        token_data = _pending_terminal_inits.pop(token, None) if token else None
+        init_cmd = token_data.get("init_cmd") if isinstance(token_data, dict) else token_data
+        track_id = token_data.get("track_id") if isinstance(token_data, dict) else None
+        await terminal_manager.handle(websocket, init_cmd=init_cmd, cols=cols, rows=rows, track_id=track_id)
 
     # ── Static files / SPA ───────────────────────────────────────────────
 
     if STATIC_DIR.exists():
         app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+    import os as _os
+    _files_base = Path(_os.getcwd()).resolve()
+
+    def _resolve_safe(path: str) -> Path:
+        """Resolve *path* relative to the project root and enforce sandbox."""
+        target = (_files_base / path).resolve()
+        if not target.is_relative_to(_files_base):
+            raise HTTPException(status_code=403, detail="Access denied")
+        return target
+
+    @app.get("/api/files/list")
+    def list_files(path: str = "."):
+        target = _resolve_safe(path)
+        if not target.exists():
+            raise HTTPException(status_code=404, detail="Path not found")
+        if not target.is_dir():
+            raise HTTPException(status_code=400, detail="Path is not a directory")
+        entries = []
+        for item in sorted(target.iterdir(), key=lambda p: (p.is_file(), p.name.lower())):
+            try:
+                size = item.stat().st_size if item.is_file() else None
+            except OSError:
+                size = None
+            entries.append({
+                "name": item.name,
+                "type": "file" if item.is_file() else "dir",
+                "size": size,
+                "path": str(item.relative_to(_files_base)),
+            })
+        return {"path": str(target.relative_to(_files_base)), "entries": entries}
+
+    @app.get("/api/files/read")
+    def read_file(path: str):
+        target = _resolve_safe(path)
+        if not target.exists():
+            raise HTTPException(status_code=404, detail="File not found")
+        if not target.is_file():
+            raise HTTPException(status_code=400, detail="Path is not a file")
+        try:
+            content = target.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            raise HTTPException(status_code=400, detail="Binary file not supported")
+        return {"path": str(target.relative_to(_files_base)), "content": content}
+
+    @app.post("/api/files/write")
+    def write_file(req: WriteFileRequest):
+        target = _resolve_safe(req.path)
+        if target.exists() and not target.is_file():
+            raise HTTPException(status_code=400, detail="Path is a directory")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(req.content, encoding="utf-8")
+        return {"path": str(target.relative_to(_files_base)), "ok": True}
+
+    # ── Instructions API ────────────────────────────────────────────────
+
+    INSTRUCTIONS_DIR = Path(__file__).parent.parent / "instructions"
+    LOCAL_INSTRUCTIONS_DIR = Path(".arche-storage/instructions")
+
+    def _parse_md_instruction(instruction_file: Path, category: str, source: str = "global") -> dict:
+        """Parse a .md instruction file and return its metadata dict."""
+        content = instruction_file.read_text(encoding="utf-8")
+        name = instruction_file.stem
+        description = ""
+        file_tags = []
+        for line in content.split("\n"):
+            if line.startswith("# ") and name == instruction_file.stem:
+                name = line[2:].strip()
+            elif line.startswith("tags:") and not file_tags:
+                file_tags = [t.strip() for t in line.replace("tags:", "").split(",")]
+            elif line.startswith("description:") and not description:
+                description = line.replace("description:", "").strip()
+        return {
+            "id": instruction_file.stem,
+            "name": name,
+            "category": category,
+            "description": description,
+            "tags": file_tags,
+            "source": source,
+        }
+
+    @app.get("/api/instructions/list")
+    def list_instructions():
+        """List all available instruction templates (global built-ins + local project)."""
+        instructions = []
+
+        # Global built-in instructions (from arche package)
+        if INSTRUCTIONS_DIR.exists():
+            for category_dir in sorted(INSTRUCTIONS_DIR.iterdir()):
+                if not category_dir.is_dir():
+                    continue
+                for instruction_file in sorted(category_dir.glob("*.md")):
+                    try:
+                        instructions.append(_parse_md_instruction(instruction_file, category_dir.name, "global"))
+                    except Exception:
+                        continue
+
+        # Local project instructions (.arche-storage/instructions/*.md)
+        if LOCAL_INSTRUCTIONS_DIR.exists():
+            for instruction_file in sorted(LOCAL_INSTRUCTIONS_DIR.glob("*.md")):
+                try:
+                    instructions.append(_parse_md_instruction(instruction_file, "local", "local"))
+                except Exception:
+                    continue
+
+        return {"instructions": instructions}
+
+    @app.get("/api/instructions/search")
+    def search_instructions(q: str = None, category: str = None, tags: str = None):
+        """Search instructions by query, category, and/or tags."""
+        all_instructions = list_instructions()["instructions"]
+
+        results = []
+        for inst in all_instructions:
+            if category and inst["category"] != category:
+                continue
+            if tags:
+                search_tags = [t.strip().lower() for t in tags.split(",")]
+                if not any(tag in [t.lower() for t in inst["tags"]] for tag in search_tags):
+                    continue
+            if q:
+                query_lower = q.lower()
+                if not (query_lower in inst["name"].lower()
+                        or query_lower in inst["description"].lower()
+                        or any(query_lower in tag.lower() for tag in inst["tags"])):
+                    continue
+            results.append(inst)
+        return {"instructions": results}
+
+    @app.get("/api/instructions/get")
+    def get_instruction(id: str, category: str = None):
+        """Get a specific instruction by ID and optional category."""
+        instruction_file = None
+
+        # 1. Local project instructions (.arche-storage/instructions/<id>.md)
+        local_file = LOCAL_INSTRUCTIONS_DIR / f"{id}.md"
+        if local_file.exists():
+            instruction_file = local_file
+
+        # 2. Global built-in instructions
+        if not instruction_file and INSTRUCTIONS_DIR.exists():
+            if category:
+                candidate = INSTRUCTIONS_DIR / category / f"{id}.md"
+                if candidate.exists():
+                    instruction_file = candidate
+            else:
+                for category_dir in INSTRUCTIONS_DIR.iterdir():
+                    if not category_dir.is_dir():
+                        continue
+                    file_path = category_dir / f"{id}.md"
+                    if file_path.exists():
+                        instruction_file = file_path
+                        break
+
+        if not instruction_file or not instruction_file.exists():
+            raise HTTPException(status_code=404, detail="Instruction not found")
+
+        try:
+            content = instruction_file.read_text(encoding="utf-8")
+            return {
+                "id": id,
+                "category": category or instruction_file.parent.name,
+                "content": content,
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to read instruction: {e}")
+
+    # ── Instruction Store API (User Custom Instructions) ──────────────────────────────────────────────────
+
+    # Initialize instruction store and load manifest on startup
+    try:
+        instruction_store = InstructionStore()
+        # Load manifest to ensure it exists and is ready
+        instruction_store.load_manifest()
+    except ImportError:
+        # pydantic not available, create a dummy store
+        instruction_store = None
+
+    @app.get("/api/instructions/store/list")
+    def list_store_instructions():
+        """List all instructions from the store (including user custom instructions)."""
+        instructions = instruction_store.get_all_instructions()
+        return {"instructions": instructions}
+
+    @app.get("/api/instructions/store/search")
+    def search_store_instructions(q: str = None, category: str = None, tags: list = None):
+        """Search instructions in the store."""
+        instructions = instruction_store.search_instructions(
+            query=q,
+            category=category,
+            tags=tags
+        )
+        return {"instructions": instructions}
+
+    @app.get("/api/instructions/store/get/{instruction_id}")
+    def get_store_instruction(instruction_id: str):
+        """Get a specific instruction from the store."""
+        instruction = instruction_store.get_instruction(instruction_id)
+        if not instruction:
+            raise HTTPException(status_code=404, detail="Instruction not found")
+        return instruction
+
+    @app.post("/api/instructions/store/add")
+    def add_store_instruction(instruction: Instruction):
+        """Add a new instruction to the store."""
+        try:
+            instruction_store.add_instruction(instruction)
+            return {"success": True, "id": instruction.id}
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    @app.put("/api/instructions/store/update")
+    def update_store_instruction(instruction: Instruction):
+        """Update an existing instruction in the store."""
+        try:
+            instruction_store.update_instruction(instruction)
+            return {"success": True, "id": instruction.id}
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+
+    @app.delete("/api/instructions/store/delete/{instruction_id}")
+    def delete_store_instruction(instruction_id: str):
+        """Delete an instruction from the store."""
+        try:
+            instruction_store.delete_instruction(instruction_id)
+            return {"success": True}
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+
+    @app.post("/api/instructions/store/enable/{instruction_id}")
+    def enable_store_instruction(instruction_id: str, enabled: bool):
+        """Enable or disable an instruction in the store."""
+        try:
+            instruction_store.enable_instruction(instruction_id, enabled)
+            return {"success": True, "enabled": enabled}
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
 
     @app.get("/")
     async def index():

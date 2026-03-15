@@ -53,6 +53,14 @@ def log_llm_call(track_id: str, model: str, phase: str) -> None:
     log(track_id, f"LLM call: `{model}` for phase `{phase}`", "LLM")
 
 
+def log_instructions_used(track_id: str, instruction_ids: list[str]) -> None:
+    """Log which instructions were injected into the prompt for this run."""
+    if not instruction_ids:
+        return
+    ids_fmt = ", ".join(f"`{i}`" for i in instruction_ids)
+    log(track_id, f"Instructions used ({len(instruction_ids)}): {ids_fmt}", "INSTRUCTIONS")
+
+
 def get_session_log(track_id: str, date: str | None = None) -> str:
     if date:
         path = _sessions_dir(track_id) / f"{date}.md"

@@ -7,6 +7,9 @@ setup(
     packages=find_packages(),
     # Module racine arche.py
     py_modules=["arche"],
+    # Include instruction templates (markdown files)
+    include_package_data=True,
+    package_data={"": ["instructions/**/*.md", "instructions/**/*.yaml"]},
     install_requires=[
         "typer>=0.9.0,<1.0.0",
         "rich>=13.7.0,<14.0.0",
@@ -15,7 +18,9 @@ setup(
         "websockets>=12.0",
         "ptyprocess>=0.7.0",
         "pyyaml>=6.0.1",
+        "questionary>=2.0.0",
         "python-multipart>=0.0.9",
+        "pydantic>=2.0.0,<3.0.0",
     ],
     entry_points={
         "console_scripts": [

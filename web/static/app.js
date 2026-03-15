@@ -1,9 +1,9 @@
-/* arche web UI — vanilla JS */
+/* arche web UI - vanilla JS */
 'use strict';
 
 const API = '';  // Same origin
 
-// ── State ──────────────────────────────────────────────────────────────────
+// -- State -----------------------------------------------------------------
 const state = {
   plans: [],
   selectedPlanId: null,
@@ -21,8 +21,8 @@ const state = {
   editingTask: null,
   doneTask: null,
   blockTask: null,
-  uiSelectedTaskId: null,   // tâche cliquée dans l'UI (pour les actions)
-  bulkSelectedTaskIds: [],  // tâches sélectionnées (checkboxes) — preserves order
+  uiSelectedTaskId: null,   // tache cliquee dans l'UI (pour les actions)
+  bulkSelectedTaskIds: [],  // taches selectionnees (checkboxes) - preserves order
   taskFilter: 'all',        // 'all' | 'TODO' | 'SELECTED' | 'IN_PROGRESS' | 'DONE'
   runTask: null,            // { trackId, taskId } | null
   interview: null,          // { planId, description, qa, currentQuestion } | null
@@ -33,11 +33,27 @@ const state = {
   collapsedPhases: new Set(), // phase IDs that are collapsed
   _userScrolling: null,     // id of tab where user is scrolling ('spec' | 'tasks' | 'output')
   _autoRefreshBlocked: false, // true if user is scrolling in any section
+  hasPassword: false,       // whether a password is set
+  sessionLocked: false,     // whether session is currently locked
+  selectedInstructionIds: new Set(), // instructions selectionnees (checkboxes)
 };
 
 let _termCounter = 0;
 
-// ── API helpers ────────────────────────────────────────────────────────────
+// -- Utilities -------------------------------------------------------------
+function debounce(func, wait) {
+  let timeout;
+  return function executedFunction(...args) {
+    const later = () => {
+      clearTimeout(timeout);
+      func(...args);
+    };
+    clearTimeout(timeout);
+    timeout = setTimeout(later, wait);
+  };
+}
+
+// -- API helpers ------------------------------------------------------------
 async function apiFetch(path, opts = {}) {
   try {
     const res = await fetch(API + path, {
@@ -64,6 +80,7 @@ const api = {
   getTrack: (id) => apiFetch(`/api/tracks/${id}`),
   getTrackSpec: (id) => apiFetch(`/api/tracks/${id}/spec`),
   getSession: (trackId, date) => apiFetch(`/api/tracks/${trackId}/sessions/${date}`),
+  getRunStatus: (trackId) => apiFetch(`/api/tracks/${trackId}/run-status`),
   createTrack: (name, trackType = 'feature') => apiFetch('/api/tracks', { method: 'POST', body: JSON.stringify({ name, track_type: trackType }) }),
   generateTemplate: (planId, description, subtypes) => apiFetch(`/api/tracks/${planId}/tasks/generate-template`, { method: 'POST', body: JSON.stringify({ description, subtypes }) }),
   switchTrack: (id) => apiFetch('/api/tracks/switch', { method: 'POST', body: JSON.stringify({ track_id: id }) }),
@@ -83,13 +100,37 @@ const api = {
   getArchi: () => apiFetch('/api/archi'),
   getMemory: () => apiFetch('/api/memory'),
   clearMemory: () => apiFetch('/api/memory', { method: 'DELETE' }),
+  // Password lock
+  getPasswordStatus: () => apiFetch('/api/settings/password'),
+  setupPassword: (password) => apiFetch('/api/settings/password/setup', { method: 'POST', body: JSON.stringify({ password }) }),
+  verifyPassword: (password) => apiFetch('/api/settings/password/verify', { method: 'POST', body: JSON.stringify({ password }) }),
+  updatePassword: (password) => apiFetch('/api/settings/password', { method: 'PATCH', body: JSON.stringify({ password }) }),
+  clearPassword: () => apiFetch('/api/settings/password/clear', { method: 'POST' }),
+  // Instructions
+  getInstructions: () => apiFetch('/api/instructions/list'),
+  searchInstructions: (params) => {
+    const query = new URLSearchParams(params).toString();
+    return apiFetch(`/api/instructions/search?${query}`);
+  },
+  getInstruction: (id) => apiFetch(`/api/instructions/get?id=${id}`),
+  getUserInstructions: () => apiFetch('/api/instructions/store/list'),
+  searchUserInstructions: (params) => {
+    const query = new URLSearchParams(params).toString();
+    return apiFetch(`/api/instructions/store/search?${query}`);
+  },
+  getUserInstruction: (id) => apiFetch(`/api/instructions/store/get/${id}`),
+  addUserInstruction: (instruction) => apiFetch('/api/instructions/store/add', { method: 'POST', body: JSON.stringify(instruction) }),
+  updateUserInstruction: (instruction) => apiFetch('/api/instructions/store/update', { method: 'PUT', body: JSON.stringify(instruction) }),
+  deleteUserInstruction: (id) => apiFetch(`/api/instructions/store/delete/${id}`, { method: 'DELETE' }),
+  enableUserInstruction: (id, enabled) => apiFetch(`/api/instructions/store/enable/${id}`, { method: 'POST', body: JSON.stringify({ enabled }) }),
 };
 
-// ── DOM refs ───────────────────────────────────────────────────────────────
+// -- DOM refs ---------------------------------------------------------------
 const $ = (sel) => document.querySelector(sel);
 const $id = (id) => document.getElementById(id);
+const escapeHtml = (s) => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 
-// ── Scroll detection helpers ────────────────────────────────────────────────
+// -- Scroll detection helpers ------------------------------------------------
 function setupScrollDetection() {
   // Detect user scrolling in spec and tasks tabs (output is now in terminals section)
   ['tab-spec', 'tasks-scroll'].forEach(id => {
@@ -115,7 +156,7 @@ function setupScrollDetection() {
 }
 
 
-// ── Init ───────────────────────────────────────────────────────────────────
+// -- Init -------------------------------------------------------------------
 async function init() {
   setupResizableConsole();
   setupEventListeners();  // registers theme listeners synchronously
@@ -129,12 +170,22 @@ async function init() {
     if (ts && ts.theme) applyTheme(ts.theme);
   } catch (_) {}
   await refresh();
+  // Force le rendu initial du panel (refresh() skippe le panel si rien ne tourne)
+  if (state.selectedPlanId) {
+    await renderPanelFor(state.selectedPlanId);
+  } else if (state.plans.length > 0) {
+    state.selectedPlanId = state.plans[0].id;
+    await renderPanelFor(state.plans[0].id);
+  }
   setupScrollDetection();
+  // Setup lock screen on page load
+  await setupLockScreen();
+  // Listen for lock state changes from other tabs
+  setupLockStorageSync();
   startPolling();
 }
 
 async function refresh() {
-  // Skip panel refresh if user is actively scrolling (but always update sidebar)
   const [project, plans] = await Promise.all([api.getProject(), api.getTracks()]);
   if (project) {
     $id('project-name').textContent = project.name || 'unknown project';
@@ -148,6 +199,9 @@ async function refresh() {
     if (activePlan && !state.selectedPlanId) {
       state.selectedPlanId = activePlan.id;
     }
+
+    // Re-render le panel uniquement si une tache tourne (evite le sursaut d'affichage)
+    if (!state.outputRunning) return;
 
     // Skip panel re-render if user is scrolling or has a dropdown open
     if (state._autoRefreshBlocked) return;
@@ -168,7 +222,7 @@ function startPolling() {
   state.pollInterval = setInterval(refresh, 3000);
 }
 
-// ── Sidebar ────────────────────────────────────────────────────────────────
+// -- Sidebar ----------------------------------------------------------------
 function renderSidebar(plans) {
   const container = $id('plan-list');
   if (plans.length === 0) {
@@ -210,13 +264,27 @@ function renderSidebar(plans) {
   });
 }
 
-// ── Panel ──────────────────────────────────────────────────────────────────
+// -- Panel ------------------------------------------------------------------
 async function renderPanelFor(planId) {
   const plan = await api.getTrack(planId);
   if (!plan) return;
 
+  // Sauvegarde l'etat editeur du track precedent, restaure celui du nouveau
+  if (state._lastPlan && state._lastPlan.id !== planId) {
+    _saveEditorStateForTrack(state._lastPlan.id);
+    _restoreEditorStateForTrack(planId);
+    if ($id('editor-tab-bar')) { _renderTabBar(); _renderEditorHeaderActions(); }
+  }
+
   state._lastPlan = plan;
   renderPlanHeader(plan);
+
+  // Restore outputRunning state if there's an active run
+  const runStatus = await api.getRunStatus(planId);
+  if (runStatus && runStatus.running) {
+    state.outputRunning = true;
+  }
+
   renderTabContent(plan, state.activeTab);
 }
 
@@ -260,10 +328,12 @@ async function renderTabContent(plan, tab) {
     case 'spec': await renderSpec(plan.id); break;
     case 'sessions': renderSessions(plan); break;
     case 'output': renderOutputPane(); break;
+    case 'editor': await renderEditor(); break;
+    case 'instructions': await renderInstructions(); break;
   }
 }
 
-// ── Tasks tab ──────────────────────────────────────────────────────────────
+// -- Tasks tab --------------------------------------------------------------
 const TASK_ICONS = { DONE: '✓', IN_PROGRESS: '▶', TODO: '·', BLOCKED: '✗' };
 const TASK_LABELS = { IN_PROGRESS: 'IN PROGRESS', BLOCKED: 'BLOCKED' };
 
@@ -359,7 +429,7 @@ function renderTasks(plan) {
     `<button class="filter-btn ${state.taskFilter === val ? 'active' : ''}" data-filter="${val}">${label} <span class="filter-count">${count}</span></button>`
   ).join('');
 
-  // Action toolbar — active based on UI selected task
+  // Action toolbar - active based on UI selected task
   const isActive = plan.status === 'ACTIVE';
   const noSel = !uiSel;
   const dis = (noSel || !isActive) ? ' disabled' : '';
@@ -371,11 +441,15 @@ function renderTasks(plan) {
     ? `<button class="task-action-btn btn-deselect-all" onclick="clearBulkSelection()">✕ Deselect All</button>`
     : `<button class="task-action-btn btn-select-all" onclick="selectAllTasks('${planId}')">☑ Select All</button>`;
 
-  // Run button label shows "Run N" for bulk or "Run" for single
+  // Run/Stop button logic
   const runLabel = bulkCount > 0 ? `⇒ Run ${bulkCount}` : '▶ Run';
   const runTitle = bulkCount > 0
     ? `Execute ${bulkCount} selected task${bulkCount > 1 ? 's' : ''} in sequence`
     : isActive ? 'Run selected task' : 'Only available on active track';
+  
+  const runStopButton = state.outputRunning
+    ? `<button class="task-action-btn btn-stop" title="Stop current run" onclick="uiStopRun()" style="background-color: #ff6b6b; color: white;">⏹ Stop</button>`
+    : `<button class="task-action-btn btn-run" title="${runTitle}"${disLlm} onclick="uiRunTask()">${runLabel}</button>`;
 
   const _savedAutoDone = $id('action-auto-done')?.checked ?? true;
   const _savedScroll = pane.querySelector('.tasks-scroll')?.scrollTop || 0;
@@ -388,7 +462,7 @@ function renderTasks(plan) {
         <div class="tasks-actions-row">
           <button class="task-action-btn btn-add" title="Add task" onclick="openAddTaskModal('${planId}')">+ Add task</button>
           <button class="task-action-btn btn-edit" title="Edit"${dis} onclick="uiEditTask()">✎ Edit</button>
-          <button class="task-action-btn btn-run" title="${runTitle}"${disLlm} onclick="uiRunTask()">${runLabel}</button>
+          ${runStopButton}
           <button class="task-action-btn btn-review" title="${isActive ? 'Review' : 'Only available on active track'}"${disLlm} onclick="uiReviewTask()">⊙ Review</button>
           <label class="auto-done-label" title="Mark task as done when run completes">
             <input type="checkbox" id="action-auto-done" checked>
@@ -440,7 +514,7 @@ function renderTasks(plan) {
     });
   });
 
-  // Inline status selects — prevent row click propagation, handle status change
+  // Inline status selects - prevent row click propagation, handle status change
   pane.querySelectorAll('.task-inline-status').forEach(sel => {
     sel.addEventListener('click', e => e.stopPropagation());
     sel.addEventListener('change', async e => {
@@ -450,7 +524,7 @@ function renderTasks(plan) {
     });
   });
 
-  // Inline type selects — save task type directly
+  // Inline type selects - save task type directly
   pane.querySelectorAll('.task-inline-type').forEach(sel => {
     sel.addEventListener('click', e => e.stopPropagation());
     sel.addEventListener('change', async e => {
@@ -461,7 +535,7 @@ function renderTasks(plan) {
   });
 }
 
-// ── Bulk selection helpers ──────────────────────────────────────────────────
+// -- Bulk selection helpers --------------------------------------------------
 function selectAllTasks(planId) {
   const plan = state._lastPlan;
   if (!plan) return;
@@ -482,7 +556,7 @@ function clearBulkSelection() {
   if (plan) renderTasks(plan);
 }
 
-// ── Phase-grouped tasks rendering ────────────────────────────────────────────
+// -- Phase-grouped tasks rendering --------------------------------------------
 function renderTasksWithPhases(plan, phases) {
   const planId = plan.id;
   const pane = $id('tab-tasks');
@@ -503,17 +577,21 @@ function renderTasksWithPhases(plan, phases) {
     ? `<button class="task-action-btn btn-deselect-all" onclick="clearBulkSelection()">✕ Deselect All</button>`
     : `<button class="task-action-btn btn-select-all" onclick="selectAllTasks('${planId}')">☑ Select All</button>`;
 
-  // Run button label shows "Run N" for bulk or "Run" for single
+  // Run/Stop button logic
   const runLabel = bulkCount > 0 ? `⇒ Run ${bulkCount}` : '▶ Run';
   const runTitle = bulkCount > 0
     ? `Execute ${bulkCount} selected task${bulkCount > 1 ? 's' : ''} in sequence`
     : isActive ? 'Run selected task' : 'Only available on active track';
+  
+  const runStopBtn = state.outputRunning
+    ? `<button class="task-action-btn btn-stop" title="Stop current run" onclick="uiStopRun()" style="background-color: #ff6b6b; color: white;">⏹ Stop</button>`
+    : `<button class="task-action-btn btn-run" title="${runTitle}"${disLlm} onclick="uiRunTask()">${runLabel}</button>`;
 
   const actionsRow = `
     <button class="task-action-btn btn-add" title="Add phase" onclick="openNewPhaseModal('${planId}')">+ Add Phase</button>
     <button class="task-action-btn btn-add" title="Add task" onclick="openAddTaskModal('${planId}')">+ Add task</button>
     <button class="task-action-btn btn-edit" title="Edit"${dis} onclick="uiEditTask()">✎ Edit</button>
-    <button class="task-action-btn btn-run" title="${runTitle}"${disLlm} onclick="uiRunTask()">${runLabel}</button>
+    ${runStopBtn}
     <button class="task-action-btn btn-review" title="${isActive ? 'Review' : 'Only available on active track'}"${disLlm} onclick="uiReviewTask()">⊙ Review</button>
     <label class="auto-done-label" title="Mark task as done when run completes">
       <input type="checkbox" id="action-auto-done" checked>
@@ -688,7 +766,7 @@ function renderTasksWithPhases(plan, phases) {
     });
   });
 
-  // Inline status selects — prevent row click propagation, handle status change
+  // Inline status selects - prevent row click propagation, handle status change
   pane.querySelectorAll('.task-inline-status').forEach(sel => {
     sel.addEventListener('click', e => e.stopPropagation());
     sel.addEventListener('change', async e => {
@@ -698,7 +776,7 @@ function renderTasksWithPhases(plan, phases) {
     });
   });
 
-  // Inline type selects — save task type directly
+  // Inline type selects - save task type directly
   pane.querySelectorAll('.task-inline-type').forEach(sel => {
     sel.addEventListener('click', e => e.stopPropagation());
     sel.addEventListener('change', async e => {
@@ -735,7 +813,7 @@ function renderTasksWithPhases(plan, phases) {
   });
 }
 
-// ── Phase generation ─────────────────────────────────────────────────────────
+// -- Phase generation ---------------------------------------------------------
 function generatePhases(planId) {
   state.outputText = '';
   state.outputRunning = true;
@@ -764,6 +842,27 @@ function generateTasksForPhase(planId, phaseId) {
   });
 }
 
+function runArcheScan() {
+  state.outputText = '';
+  state.outputRunning = true;
+  _openOutputTerminal('scan', '⚡ Scan Architecture');
+  _setOutputHeader('▶ Scanning project architecture…');
+
+  _startStream(`/api/scan`, {
+    onMeta: (t) => { _setOutputHeader('▶ ' + t); },
+    onText: _appendOutput,
+    onDone: () => {
+      state.outputRunning = false;
+      _appendOutput('\n✓ Architecture scan complete\n');
+      // Refresh the architecture view
+      if (state.selectedPlanId) renderPanelFor(state.selectedPlanId);
+      // Refresh archi content
+      showArchiModal();
+    },
+    onError: () => { state.outputRunning = false; _appendOutput('\n⚠ Connection error\n'); },
+  });
+}
+
 async function uiDeleteTask(planId, taskId, taskTitle) {
   if (!confirm(`Delete task "${taskTitle}"?`)) return;
   await apiFetch(`/api/tracks/${planId}/tasks/${taskId}`, { method: 'DELETE' });
@@ -776,7 +875,7 @@ async function uiDeletePhase(planId, phaseId, phaseName) {
   await renderPanelFor(planId);
 }
 
-// ── Phase collapse toggle ─────────────────────────────────────────────────────
+// -- Phase collapse toggle -----------------------------------------------------
 function togglePhase(phaseId) {
   if (state.collapsedPhases.has(phaseId)) {
     state.collapsedPhases.delete(phaseId);
@@ -786,7 +885,7 @@ function togglePhase(phaseId) {
   if (state.selectedPlanId) renderPanelFor(state.selectedPlanId);
 }
 
-// ── New phase modal ──────────────────────────────────────────────────────────
+// -- New phase modal ----------------------------------------------------------
 function openNewPhaseModal(planId) {
   state.newPhasePlanId = planId;
   $id('modal-phase-name').value = '';
@@ -802,7 +901,7 @@ function closePhaseModal() {
 
 async function openArchiModal() {
   const data = await api.getArchi();
-  $id('archi-content').textContent = data?.content?.trim() || '(empty — run arche scan to generate)';
+  $id('archi-content').textContent = data?.content?.trim() || '(empty - run arche scan to generate)';
   $id('archi-hint').textContent = data?.exists ? 'storage/archi.md' : 'not generated yet';
   $id('modal-archi-overlay').classList.remove('hidden');
 }
@@ -813,7 +912,7 @@ function closeArchiModal() {
 
 async function openMemoryModal() {
   const data = await api.getMemory();
-  $id('memory-content').textContent = data?.content?.trim() || '(empty — no cross-track discoveries yet)';
+  $id('memory-content').textContent = data?.content?.trim() || '(empty - no cross-track discoveries yet)';
   $id('modal-memory-overlay').classList.remove('hidden');
 }
 
@@ -837,7 +936,599 @@ async function confirmNewPhase() {
   await renderPanelFor(planId);
 }
 
-// ── Spec tab ───────────────────────────────────────────────────────────────
+// -- Instructions tab --------------------------------------------------------
+async function renderInstructions() {
+  const pane = $id('tab-instructions');
+  pane.innerHTML = `
+    <div class="instructions-layout">
+      <div class="instructions-search">
+        <input type="text" id="instruction-search" placeholder="Search instructions..." />
+        <select id="instruction-category">
+          <option value="">All Categories</option>
+          <option value="general">General</option>
+          <option value="languages">Languages</option>
+          <option value="frontend">Frontend</option>
+          <option value="backend">Backend</option>
+          <option value="tooling">Tooling</option>
+        </select>
+        <input type="text" id="instruction-tags" placeholder="Filter by tags..." />
+      </div>
+      <div id="instruction-list"></div>
+    </div>
+  `;
+  
+  // Load and display instructions
+  await loadInstructions();
+  
+  // Set up event listeners
+  $id('instruction-search').addEventListener('input', debounce(loadInstructions, 300));
+  $id('instruction-category').addEventListener('change', loadInstructions);
+  $id('instruction-tags').addEventListener('input', debounce(loadInstructions, 300));
+}
+
+async function loadInstructions() {
+  const searchQuery = $id('instruction-search').value;
+  const category = $id('instruction-category').value;
+  const tags = $id('instruction-tags').value;
+  
+  const listContainer = $id('instruction-list');
+  listContainer.innerHTML = '';
+  
+  // Show loading skeleton
+  for (let i = 0; i < 5; i++) {
+    const skeleton = document.createElement('div');
+    skeleton.className = 'instruction-skeleton';
+    listContainer.appendChild(skeleton);
+  }
+  
+  try {
+    const params = {};
+    if (searchQuery) params.q = searchQuery;
+    if (category) params.category = category;
+    if (tags) params.tags = tags;
+    
+    const response = await api.searchInstructions(params);
+    if (!response) {
+      throw new Error('Failed to fetch instructions from server');
+    }
+    const instructions = response.instructions || [];
+    
+    listContainer.innerHTML = '';
+    
+    if (instructions.length === 0) {
+      listContainer.innerHTML = `
+        <div class="instructions-empty-state">
+          <div class="empty-state-icon">📚</div>
+          <p class="empty-state-text">No instructions found</p>
+          <p class="empty-state-subtext">Try adjusting your search or adding new instructions</p>
+        </div>
+      `;
+      return;
+    }
+    
+    instructions.forEach(instruction => {
+      const item = document.createElement('div');
+      item.className = 'instruction-item';
+      const tagsHtml = instruction.tags && instruction.tags.length > 0 
+        ? `<div class="instruction-tags">${instruction.tags.map(t => `<span class="tag">${escHtml(t)}</span>`).join(' ')}</div>`
+        : '';
+      const isEditable = instruction.source === 'user';
+      item.dataset.source = instruction.source || '';
+      item.dataset.category = instruction.category || '';
+      item.innerHTML = `
+        <div class="instruction-header">
+          <input type="checkbox" class="instruction-checkbox" data-id="${instruction.id}" />
+          <div class="instruction-name" data-id="${instruction.id}">${escHtml(instruction.name)}</div>
+          <div class="instruction-category">${escHtml(instruction.category)}</div>
+        </div>
+        ${tagsHtml}
+        <div class="instruction-description">${escHtml(instruction.description || '')}</div>
+        <div class="instruction-content" style="display: none;">
+          ${isEditable
+            ? `<textarea class="instruction-editor" data-id="${instruction.id}"></textarea>
+               <div class="instruction-editor-actions">
+                 <button class="btn-save-instruction" data-id="${instruction.id}">Save</button>
+                 <button class="btn-cancel-edit" data-id="${instruction.id}">Cancel</button>
+               </div>`
+            : `<pre class="instruction-viewer"></pre>
+               <div class="instruction-editor-actions">
+                 <button class="btn-cancel-edit" data-id="${instruction.id}">Close</button>
+               </div>`
+          }
+        </div>
+      `;
+      listContainer.appendChild(item);
+    });
+    
+    // Set up checkbox event listeners and restore checked state
+    document.querySelectorAll('.instruction-checkbox').forEach(checkbox => {
+      // Restore selection state after re-render
+      if (state.selectedInstructionIds.has(checkbox.dataset.id)) {
+        checkbox.checked = true;
+      }
+      checkbox.addEventListener('change', function() {
+        const instructionId = this.dataset.id;
+        if (this.checked) {
+          state.selectedInstructionIds.add(instructionId);
+        } else {
+          state.selectedInstructionIds.delete(instructionId);
+        }
+        updateInstructionSelectionFeedback();
+      });
+    });
+
+    // Set up instruction name click to open editor or viewer
+    document.querySelectorAll('.instruction-name').forEach(nameElement => {
+      nameElement.addEventListener('click', async function() {
+        const instructionId = this.dataset.id;
+        const item = this.closest('.instruction-item');
+        const contentElement = item.querySelector('.instruction-content');
+        const isEditable = item.dataset.source === 'user';
+
+        // Toggle visibility
+        if (contentElement.style.display !== 'none') {
+          contentElement.style.display = 'none';
+          this.classList.remove('editing');
+          return;
+        }
+
+        this.classList.add('editing');
+        contentElement.style.display = 'block';
+
+        if (isEditable) {
+          // Load user instruction content into textarea
+          const textarea = contentElement.querySelector('.instruction-editor');
+          if (textarea && !textarea.value) {
+            try {
+              const data = await api.getUserInstruction(instructionId);
+              textarea.value = data.content || '';
+            } catch (e) {
+              console.error('Failed to load instruction content', e);
+            }
+          }
+        } else {
+          // Load builtin/global instruction content into read-only viewer
+          const viewer = contentElement.querySelector('.instruction-viewer');
+          if (viewer && !viewer.textContent) {
+            viewer.textContent = 'Loading…';
+            try {
+              const categoryParam = item.dataset.category ? `&category=${encodeURIComponent(item.dataset.category)}` : '';
+              const data = await apiFetch(`/api/instructions/get?id=${encodeURIComponent(instructionId)}${categoryParam}`);
+              viewer.textContent = data.content || '';
+            } catch (e) {
+              viewer.textContent = 'Failed to load content.';
+              console.error('Failed to load instruction content', e);
+            }
+          }
+        }
+      });
+    });
+
+    // Set up save button event listeners
+    document.querySelectorAll('.btn-save-instruction').forEach(saveButton => {
+      saveButton.addEventListener('click', async function() {
+        const instructionId = this.dataset.id;
+        const item = this.closest('.instruction-item');
+        const editor = item.querySelector('.instruction-editor');
+        const nameElement = item.querySelector('.instruction-name');
+        
+        try {
+          const instruction = await api.getUserInstruction(instructionId);
+          
+          // Update instruction content
+          instruction.content = editor.value;
+          
+          // Save to backend
+          const saveResponse = await api.updateUserInstruction(instruction);
+          
+          if (!saveResponse) {
+            throw new Error('Failed to save instruction to server');
+          }
+          
+          if (saveResponse) {
+            // Close editor
+            item.querySelector('.instruction-content').style.display = 'none';
+            nameElement.classList.remove('editing');
+            
+            // Show success feedback
+            const successMsg = document.createElement('div');
+            successMsg.className = 'instruction-save-success';
+            successMsg.textContent = 'Saved successfully!';
+            item.appendChild(successMsg);
+            
+            setTimeout(() => {
+              successMsg.remove();
+            }, 2000);
+          }
+        } catch (error) {
+          console.error('Error saving instruction:', error);
+          alert('Failed to save instruction: ' + error.message);
+        }
+      });
+    });
+
+    // Set up cancel button event listeners
+    document.querySelectorAll('.btn-cancel-edit').forEach(cancelButton => {
+      cancelButton.addEventListener('click', function() {
+        const instructionId = this.dataset.id;
+        const item = this.closest('.instruction-item');
+        const nameElement = item.querySelector('.instruction-name');
+        
+        // Close editor without saving
+        item.querySelector('.instruction-content').style.display = 'none';
+        nameElement.classList.remove('editing');
+      });
+    });
+  } catch (error) {
+    console.error('Error loading instructions:', error);
+    $id('instruction-list').innerHTML = '<div class="error">Failed to load instructions</div>';
+  }
+}
+
+function updateInstructionSelectionFeedback() {
+  const count = state.selectedInstructionIds.size;
+  const tab = document.querySelector('.tab[data-tab="instructions"]');
+  if (!tab) return;
+  tab.textContent = count > 0 ? `Instructions (${count})` : 'Instructions';
+}
+
+// -- Editor tab -------------------------------------------------------------
+const _expandedDirs = new Set(); // persists across re-renders
+let _cmEditor = null;
+let _autosaveTimer = null;
+let _autosaveEnabled = localStorage.getItem('editor-autosave') === 'true';
+let _editorTabs = [];      // { path, savedContent, draftContent, cursor, scroll, touched }
+let _activeTabPath = null;
+const _editorStateByTrack = new Map(); // trackId → { tabs, activeTabPath }
+
+function _saveEditorStateForTrack(trackId) {
+  if (!trackId) return;
+  if (_cmEditor && _activeTabPath) {
+    const t = _activeTab();
+    if (t) { t.draftContent = _cmEditor.getValue(); t.cursor = _cmEditor.getCursor(); t.scroll = _cmEditor.getScrollInfo(); }
+  }
+  _editorStateByTrack.set(trackId, { tabs: _editorTabs, activeTabPath: _activeTabPath });
+}
+
+function _restoreEditorStateForTrack(trackId) {
+  const saved = trackId ? _editorStateByTrack.get(trackId) : null;
+  _editorTabs = saved ? saved.tabs : [];
+  _activeTabPath = saved ? saved.activeTabPath : null;
+  if (_cmEditor) {
+    const tab = _activeTab();
+    if (tab) {
+      _cmEditor.setValue(tab.draftContent ?? tab.savedContent);
+      _cmEditor.setOption('mode', _getCodeMirrorMode(tab.path));
+      if (tab.cursor) _cmEditor.setCursor(tab.cursor);
+      if (tab.scroll) _cmEditor.scrollTo(tab.scroll.left, tab.scroll.top);
+    } else {
+      _cmEditor.setValue('');
+    }
+  }
+}
+
+function _activeTab() {
+  return _editorTabs.find(t => t.path === _activeTabPath) || null;
+}
+
+function _isTabDirty(tab) {
+  if (!tab) return false;
+  if (tab.path === _activeTabPath && _cmEditor)
+    return _cmEditor.getValue() !== tab.savedContent;
+  return tab.draftContent !== null && tab.draftContent !== tab.savedContent;
+}
+
+function _renderTabBar() {
+  const bar = $id('editor-tab-bar');
+  if (!bar) return;
+  bar.innerHTML = '';
+  for (const tab of _editorTabs) {
+    const dirty = _isTabDirty(tab);
+    const active = tab.path === _activeTabPath;
+    const name = tab.path.split('/').pop();
+    const el = document.createElement('div');
+    el.className = `editor-file-tab${active ? ' active' : ''}`;
+    el.title = tab.path;
+    el.innerHTML = `<span class="editor-file-tab-name">${escapeHtml(name)}${dirty ? '<span class="editor-tab-dirty">●</span>' : ''}</span><span class="editor-file-tab-close">×</span>`;
+    el.querySelector('.editor-file-tab-name').addEventListener('click', () => _switchFileTab(tab.path));
+    el.querySelector('.editor-file-tab-close').addEventListener('click', (e) => { e.stopPropagation(); _closeFileTab(tab.path); });
+    bar.appendChild(el);
+  }
+}
+
+function _switchFileTab(path) {
+  if (!_cmEditor || path === _activeTabPath) return;
+  const cur = _activeTab();
+  if (cur) {
+    cur.draftContent = _cmEditor.getValue();
+    cur.cursor = _cmEditor.getCursor();
+    cur.scroll = _cmEditor.getScrollInfo();
+  }
+  _activeTabPath = path;
+  const tab = _activeTab();
+  if (!tab) return;
+  _cmEditor.setValue(tab.draftContent ?? tab.savedContent);
+  _cmEditor.setOption('mode', _getCodeMirrorMode(path));
+  if (tab.cursor) _cmEditor.setCursor(tab.cursor);
+  if (tab.scroll) _cmEditor.scrollTo(tab.scroll.left, tab.scroll.top);
+  _cmEditor.focus();
+  _renderTabBar();
+  document.querySelectorAll('.file-tree-row.selected').forEach(r => r.classList.remove('selected'));
+  document.querySelector(`.file-tree-row[data-path="${CSS.escape(path)}"]`)?.classList.add('selected');
+}
+
+function _closeFileTab(path) {
+  const idx = _editorTabs.findIndex(t => t.path === path);
+  if (idx === -1) return;
+  _editorTabs.splice(idx, 1);
+  if (_activeTabPath === path) {
+    const next = _editorTabs[Math.min(idx, _editorTabs.length - 1)];
+    if (next && _cmEditor) {
+      _activeTabPath = next.path;
+      _cmEditor.setValue(next.draftContent ?? next.savedContent);
+      _cmEditor.setOption('mode', _getCodeMirrorMode(next.path));
+      if (next.cursor) _cmEditor.setCursor(next.cursor);
+      if (next.scroll) _cmEditor.scrollTo(next.scroll.left, next.scroll.top);
+      document.querySelectorAll('.file-tree-row.selected').forEach(r => r.classList.remove('selected'));
+      document.querySelector(`.file-tree-row[data-path="${CSS.escape(next.path)}"]`)?.classList.add('selected');
+    } else {
+      _activeTabPath = null;
+      if (_cmEditor) _cmEditor.setValue('');
+    }
+  }
+  _renderTabBar();
+  _renderEditorHeaderActions();
+}
+
+function _renderEditorHeaderActions() {
+  const headerActions = $id('plan-header-actions');
+  if (!headerActions) return;
+  if (!_activeTabPath) { headerActions.innerHTML = ''; return; }
+  headerActions.innerHTML = `
+    <span id="editor-save-status" class="editor-save-status"></span>
+    <label class="editor-autosave-label">
+      <input type="checkbox" id="editor-autosave-cb" ${_autosaveEnabled ? 'checked' : ''}>
+      Autosave
+    </label>
+    <button class="btn btn-sm" id="btn-save-file">Save</button>`;
+  $id('btn-save-file').addEventListener('click', saveFile);
+  $id('editor-autosave-cb').addEventListener('change', (e) => {
+    _autosaveEnabled = e.target.checked;
+    localStorage.setItem('editor-autosave', _autosaveEnabled);
+  });
+}
+
+function _getCodeMirrorMode(filePath) {
+  const ext = (filePath.split('.').pop() || '').toLowerCase();
+  const modes = {
+    py: 'python', js: 'javascript', ts: 'javascript',
+    css: 'css', html: 'htmlmixed', htm: 'htmlmixed',
+    yaml: 'yaml', yml: 'yaml',
+    md: 'markdown', markdown: 'markdown',
+    sh: 'shell', bash: 'shell',
+    json: { name: 'javascript', json: true },
+  };
+  return modes[ext] || 'text/plain';
+}
+
+async function renderEditor() {
+  if ($id('editor-browser')) {
+    // Already initialized - restore header and tab bar
+    _renderEditorHeaderActions();
+    _renderTabBar();
+    return;
+  }
+  const el = $id('plan-header-actions'); if (el) el.innerHTML = '';
+  const pane = $id('tab-editor');
+  pane.innerHTML = `
+    <div class="editor-layout">
+      <div class="editor-browser" id="editor-browser"></div>
+      <div class="editor-pane" id="editor-pane">
+        <div class="editor-tab-bar" id="editor-tab-bar"></div>
+        <div class="editor-cm-wrapper" id="editor-cm-wrapper">
+          <div class="empty-state">Select a file to edit.</div>
+        </div>
+      </div>
+    </div>`;
+  await renderFileBrowser('.');
+}
+
+async function renderFileBrowser(rootPath) {
+  const container = $id('editor-browser');
+  if (!container) return;
+  container.innerHTML = '<div class="empty-state">Loading...</div>';
+  try {
+    const data = await apiFetch(`/api/files/list?path=${encodeURIComponent(rootPath)}`);
+    container.innerHTML = '';
+    const header = document.createElement('div');
+    header.className = 'file-browser-header';
+    header.textContent = 'Files';
+    container.appendChild(header);
+    const tree = document.createElement('div');
+    tree.className = 'file-tree';
+    await _buildTreeNodes(tree, rootPath, data.entries, 0);
+    container.appendChild(tree);
+  } catch (e) {
+    container.innerHTML = `<div class="empty-state">Error: ${e.message}</div>`;
+  }
+}
+
+async function _buildTreeNodes(parent, dirPath, entries, depth) {
+  for (const entry of entries) {
+    const row = document.createElement('div');
+    row.className = 'file-tree-row';
+    row.style.paddingLeft = `${8 + depth * 14}px`;
+    row.dataset.path = entry.path;
+    row.dataset.type = entry.type;
+
+    const icon = document.createElement('span');
+    icon.className = 'file-tree-icon';
+
+    const label = document.createElement('span');
+    label.className = 'file-tree-label';
+    label.textContent = entry.name;
+
+    if (entry.type === 'dir') {
+      const expanded = _expandedDirs.has(entry.path);
+      icon.textContent = expanded ? '▾' : '▸';
+      row.classList.add('file-tree-dir');
+      row.append(icon, label);
+      parent.appendChild(row);
+
+      const childContainer = document.createElement('div');
+      childContainer.className = 'file-tree-children';
+      if (!expanded) childContainer.style.display = 'none';
+      parent.appendChild(childContainer);
+
+      if (expanded) {
+        await _loadDirChildren(childContainer, entry.path, depth + 1);
+      }
+
+      row.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        if (_expandedDirs.has(entry.path)) {
+          _expandedDirs.delete(entry.path);
+          icon.textContent = '▸';
+          childContainer.style.display = 'none';
+        } else {
+          _expandedDirs.add(entry.path);
+          icon.textContent = '▾';
+          childContainer.style.display = '';
+          if (!childContainer.hasChildNodes()) {
+            await _loadDirChildren(childContainer, entry.path, depth + 1);
+          }
+        }
+      });
+    } else {
+      icon.textContent = '·';
+      row.classList.add('file-tree-file');
+      row.append(icon, label);
+      parent.appendChild(row);
+      row.addEventListener('click', (e) => {
+        e.stopPropagation();
+        // Highlight selected
+        document.querySelectorAll('.file-tree-row.selected').forEach(r => r.classList.remove('selected'));
+        row.classList.add('selected');
+        openFile(entry.path);
+      });
+    }
+  }
+}
+
+async function _loadDirChildren(container, dirPath, depth) {
+  container.innerHTML = `<div class="file-tree-row" style="padding-left:${8 + depth * 14}px; color:var(--text-dim)">Loading...</div>`;
+  try {
+    const data = await apiFetch(`/api/files/list?path=${encodeURIComponent(dirPath)}`);
+    container.innerHTML = '';
+    await _buildTreeNodes(container, dirPath, data.entries, depth);
+  } catch (e) {
+    container.innerHTML = `<div class="file-tree-row" style="padding-left:${8 + depth * 14}px; color:var(--red)">${e.message}</div>`;
+  }
+}
+
+async function openFile(filePath) {
+  // Already open → switch
+  if (_editorTabs.find(t => t.path === filePath)) {
+    _switchFileTab(filePath);
+    return;
+  }
+
+  const data = await apiFetch(`/api/files/read?path=${encodeURIComponent(filePath)}`);
+  if (!data) { showToast(`Cannot read file: ${filePath}`); return; }
+
+  const curTab = _activeTab();
+  const curDirty = _isTabDirty(curTab);
+
+  if (curTab && !curDirty && !curTab.touched) {
+    // Replace current tab seulement si jamais modifie (ni dirty ni sauve après modif)
+    curTab.path = filePath;
+    curTab.savedContent = data.content;
+    curTab.draftContent = null;
+    curTab.cursor = null;
+    curTab.scroll = null;
+    curTab.touched = false;
+    _activeTabPath = filePath;
+  } else {
+    // Fichier modifie (même si sauve) ou jamais ouvert → nouvel onglet
+    if (curTab && _cmEditor) {
+      curTab.draftContent = _cmEditor.getValue();
+      curTab.cursor = _cmEditor.getCursor();
+      curTab.scroll = _cmEditor.getScrollInfo();
+    }
+    _editorTabs.push({ path: filePath, savedContent: data.content, draftContent: null, cursor: null, scroll: null, touched: false });
+    _activeTabPath = filePath;
+  }
+
+  const wrapper = $id('editor-cm-wrapper');
+  if (!_cmEditor) {
+    wrapper.innerHTML = '';
+    if (typeof CodeMirror !== 'undefined') {
+      _cmEditor = CodeMirror(wrapper, {
+        value: data.content,
+        mode: _getCodeMirrorMode(filePath),
+        theme: 'dracula',
+        lineNumbers: true,
+        lineWrapping: false,
+        tabSize: 2,
+        indentWithTabs: false,
+        autofocus: true,
+      });
+      _cmEditor.on('change', () => {
+        const t = _activeTab();
+        if (t) t.touched = true;
+        _renderTabBar();
+        if (!_autosaveEnabled) return;
+        clearTimeout(_autosaveTimer);
+        _autosaveTimer = setTimeout(saveFile, 1000);
+      });
+    } else {
+      wrapper.innerHTML = `<pre class="editor-preview">${escapeHtml(data.content)}</pre>`;
+    }
+  } else {
+    _cmEditor.setValue(data.content);
+    _cmEditor.setOption('mode', _getCodeMirrorMode(filePath));
+    _cmEditor.focus();
+  }
+
+  _renderTabBar();
+  _renderEditorHeaderActions();
+}
+
+async function saveFile() {
+  if (!_activeTabPath || !_cmEditor) return;
+  const tab = _activeTab();
+  const content = _cmEditor.getValue();
+  const statusEl = $id('editor-save-status');
+  try {
+    const res = await fetch('/api/files/write', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: _activeTabPath, content }),
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      console.error('saveFile failed', res.status, body);
+      if (statusEl) _showSaveStatus(statusEl, `Error ${res.status}: ${body}`, 'error');
+      return;
+    }
+    if (tab) { tab.savedContent = content; tab.draftContent = null; }
+    _renderTabBar();
+    if (statusEl) _showSaveStatus(statusEl, 'Saved', 'success');
+  } catch (e) {
+    console.error('saveFile error', e);
+    if (statusEl) _showSaveStatus(statusEl, `Error: ${e.message}`, 'error');
+  }
+}
+
+function _showSaveStatus(el, msg, type) {
+  el.textContent = msg;
+  el.className = `editor-save-status ${type}`;
+  el.style.opacity = '1';
+  clearTimeout(el._fadeTimeout);
+  el._fadeTimeout = setTimeout(() => { el.style.opacity = '0'; }, 2000);
+}
+
+// -- Spec tab ---------------------------------------------------------------
 async function renderSpec(planId) {
   const el = $id('plan-header-actions'); if (el) el.innerHTML = '';
   const pane = $id('tab-spec');
@@ -856,7 +1547,7 @@ async function renderSpec(planId) {
     <pre class="spec-content">${escHtml(data.content)}</pre>`;
 }
 
-// ── Sessions tab ───────────────────────────────────────────────────────────
+// -- Sessions tab -----------------------------------------------------------
 function renderSessions(plan) {
   const el = $id('plan-header-actions'); if (el) el.innerHTML = '';
   const sessions = plan.sessions || [];
@@ -896,7 +1587,7 @@ async function toggleSession(headerEl, planId, date) {
   }
 }
 
-// ── UI task actions (action bar) ────────────────────────────────────────────
+// -- UI task actions (action bar) --------------------------------------------
 function _getUiTask() {
   const plan = state._lastPlan;
   if (!plan || !state.uiSelectedTaskId) return null;
@@ -914,6 +1605,26 @@ function uiRunTask() {
     if (t) {
       openRunModal(state.selectedPlanId, t.id, t.title, autoDone);
     }
+  }
+}
+
+async function uiStopRun() {
+  if (!state.selectedPlanId) return;
+  try {
+    const resp = await fetch(`/api/tracks/${state.selectedPlanId}/stop-run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    const data = await resp.json();
+    console.log('[uiStopRun] Stopped:', data);
+    state.outputRunning = false;
+    if (state.outputEventSource) {
+      state.outputEventSource.close();
+      state.outputEventSource = null;
+    }
+    refresh();
+  } catch (err) {
+    console.error('[uiStopRun] Error:', err);
   }
 }
 
@@ -954,7 +1665,7 @@ function handleStatusChange(newStatus) {
     // Just select the task (it will be marked IN_PROGRESS when running)
     uiSelectTask();
   } else if (newStatus === 'TODO') {
-    // Reset to TODO — could add a confirmation here
+    // Reset to TODO - could add a confirmation here
     markTaskTodo(state.selectedPlanId, t.id);
   }
 }
@@ -979,7 +1690,7 @@ async function handleTaskStatusChange(planId, taskId, newStatus, title = '') {
   }
 }
 
-// ── Legacy actions ───────────────────────────────────────────────────────────
+// -- Legacy actions -----------------------------------------------------------
 async function markTaskDone(planId, taskId) {
   await api.doneTask(planId, taskId);
   await renderPanelFor(planId);
@@ -999,7 +1710,7 @@ async function switchCurrentTask(planId, taskId) {
   await refreshSidebar();
 }
 
-// ── Run task modal ──────────────────────────────────────────────────────────
+// -- Run task modal ----------------------------------------------------------
 function openRunModal(trackId, taskId, taskTitle, autoDone = true) {
   state.runTask = { trackId, taskId };
   $id('run-task-title').textContent = taskTitle;
@@ -1023,9 +1734,9 @@ function confirmRunTask() {
   runTask(trackId, taskId, comment, autoDone);
 }
 
-// ── Streaming helpers ───────────────────────────────────────────────────────
+// -- Streaming helpers -------------------------------------------------------
 function _switchToOutputTab() {
-  // Output is now in the terminals section — ensure console is open
+  // Output is now in the terminals section - ensure console is open
   if (state.consoleCollapsed) {
     $id('console-wrapper').classList.remove('collapsed');
     state.consoleCollapsed = false;
@@ -1156,7 +1867,7 @@ async function _startPostStream(url, body, { onMeta, onText, onDone, onError, on
   }
 }
 
-// ── Run task / Output tab ───────────────────────────────────────────────────
+// -- Run task / Output tab ---------------------------------------------------
 
 // Returns the track name to use as terminal tab title.
 function _getTerminalTitle(planId) {
@@ -1180,6 +1891,11 @@ async function runTask(planId, taskId, comment = '', autoDone = true) {
     const params = new URLSearchParams();
     if (comment) params.append('comment', comment);
     if (autoDone) params.append('auto_done', 'true');
+    
+    // Add selected instruction IDs if any
+    if (state.selectedInstructionIds && state.selectedInstructionIds.size > 0) {
+      params.append('instructions', Array.from(state.selectedInstructionIds).join(','));
+    }
 
     // Prepare the task server-side: switch to task, build prompt, save to temp file
     const resp = await fetch(`/api/tracks/${planId}/tasks/${taskId}/prepare-run?${params}`);
@@ -1213,7 +1929,7 @@ function runBulkTasks(trackId, taskIds, comment = '', autoDone = true) {
   state._outputMeta = '';
   state._outputDone = false;
 
-  // Single terminal for all bulk tasks — tab name = track name
+  // Single terminal for all bulk tasks - tab name = track name
   const bulkTabTitle = _getTerminalTitle(trackId);
   const bulkTerminal = createStreamTerminal(`bulk-${trackId}`, bulkTabTitle);
   bulkTerminal.term.clear();
@@ -1222,6 +1938,9 @@ function runBulkTasks(trackId, taskIds, comment = '', autoDone = true) {
     task_ids: taskIds,
     comment: comment,
     auto_done: autoDone,
+    instructions: state.selectedInstructionIds && state.selectedInstructionIds.size > 0 
+      ? Array.from(state.selectedInstructionIds).join(',') 
+      : '',
   };
 
   const url = `/api/tracks/${trackId}/tasks/bulk-run`;
@@ -1267,6 +1986,7 @@ function runBulkTasks(trackId, taskIds, comment = '', autoDone = true) {
               if (data.startsWith('__BULK_DONE__')) {
                 state.outputRunning = false;
                 state._outputDone = true;
+                state.bulkSelectedTaskIds = [];
                 bulkTerminal.term.write('\r\n✓ Bulk execution complete\r\n');
                 refresh();
                 return;
@@ -1307,7 +2027,7 @@ function renderOutputPane() {
   // This function is kept for backward compatibility but does nothing.
 }
 
-// ── Edit task modal ─────────────────────────────────────────────────────────
+// -- Edit task modal ---------------------------------------------------------
 function openEditTask(planId, taskId) {
   const plan = state.plans.find(p => p.id === planId);
   const tasks = plan ? (plan.tasks || []) : [];
@@ -1345,7 +2065,7 @@ async function saveEditTask() {
   await renderPanelFor(planId);
 }
 
-// ── Complete task modal ─────────────────────────────────────────────────────
+// -- Complete task modal -----------------------------------------------------
 function openDoneModal(planId, taskId, title) {
   state.doneTask = { planId, taskId };
   $id('done-task-title').textContent = title;
@@ -1372,7 +2092,7 @@ async function confirmDoneTask() {
   await refreshSidebar();
 }
 
-// ── Block task modal ─────────────────────────────────────────────────────────
+// -- Block task modal ---------------------------------------------------------
 function openBlockModal(planId, taskId, title) {
   state.blockTask = { planId, taskId };
   $id('block-task-title').textContent = title;
@@ -1414,7 +2134,7 @@ async function refreshSidebar() {
   }
 }
 
-// ── Tabs ───────────────────────────────────────────────────────────────────
+// -- Tabs -------------------------------------------------------------------
 function setupTabs() {
   document.querySelectorAll('.tab').forEach(btn => {
     btn.addEventListener('click', async () => {
@@ -1434,7 +2154,7 @@ function setupTabs() {
   });
 }
 
-// ── Terminal management ────────────────────────────────────────────────────
+// -- Terminal management ----------------------------------------------------
 const TERM_OPTS = {
   theme: { background: '#0d0d0d', foreground: '#e0e0e0', cursor: '#39c5cf', selection: '#2a4a5a' },
   fontSize: 12,
@@ -1519,7 +2239,7 @@ function createTaskTerminal(taskId, taskTitle = '', token = null) {
   term.loadAddon(fitAddon);
   term.open(pane);
 
-  // Real PTY WebSocket — the user can interact with the LLM if it asks questions
+  // Real PTY WebSocket - the user can interact with the LLM if it asks questions
   const ws = _connectTerminalWs(id, term, fitAddon, token);
   const entry = { id, term, fitAddon, ws, pane, taskTitle: displayTitle };
   state.terminals.push(entry);
@@ -1647,7 +2367,7 @@ function _connectTerminalWs(id, term, fitAddon, token = null) {
   ws.onopen = () => {
     if (id === state.activeTerminalId) _updateStatus('connected');
     try { fitAddon.fit(); } catch (_) {}
-    // Always send current size explicitly — fitAddon.fit() only triggers term.onResize
+    // Always send current size explicitly - fitAddon.fit() only triggers term.onResize
     // when the size actually changes; if the terminal was already fitted before the WS
     // opened, onResize won't fire and the server PTY would stay at its default 80×24.
     sendResize(term.cols, term.rows);
@@ -1673,9 +2393,20 @@ function _connectTerminalWs(id, term, fitAddon, token = null) {
   return ws;
 }
 
-// ── Event listeners ────────────────────────────────────────────────────────
+// -- Event listeners --------------------------------------------------------
 function setupEventListeners() {
   setupTabs();
+
+  // Sidebar toggle
+  const sidebarToggle = $id('sidebar-toggle');
+  const sidebar = $id('sidebar');
+  const sidebarCollapsed = localStorage.getItem('sidebar-collapsed') === 'true';
+  if (sidebarCollapsed) { sidebar.classList.add('collapsed'); sidebarToggle.classList.add('collapsed'); }
+  sidebarToggle.addEventListener('click', () => {
+    const collapsed = sidebar.classList.toggle('collapsed');
+    sidebarToggle.classList.toggle('collapsed', collapsed);
+    localStorage.setItem('sidebar-collapsed', collapsed);
+  });
 
   // New plan button
   $id('btn-new-plan').addEventListener('click', () => {
@@ -1735,8 +2466,6 @@ function setupEventListeners() {
   $id('modal-phase-name').addEventListener('keydown', (e) => { if (e.key === 'Enter') confirmNewPhase(); if (e.key === 'Escape') closePhaseModal(); });
 
   // Refresh button
-  $id('btn-web-refresh').addEventListener('click', refresh);
-
   // Settings cog dropdown
   $id('btn-settings-cog').addEventListener('click', (e) => {
     e.stopPropagation();
@@ -1748,10 +2477,12 @@ function setupEventListeners() {
   $id('drop-archi').addEventListener('click', () => { $id('settings-dropdown').classList.add('hidden'); openArchiModal(); });
   $id('drop-memory').addEventListener('click', () => { $id('settings-dropdown').classList.add('hidden'); openMemoryModal(); });
   $id('drop-theme').addEventListener('click', () => { $id('settings-dropdown').classList.add('hidden'); openThemeModal(); });
+  $id('btn-lock').addEventListener('click', toggleLockSession);
   $id('drop-project-settings').addEventListener('click', () => { $id('settings-dropdown').classList.add('hidden'); openSettingsModal(); });
 
   // Archi modal
   $id('archi-close').addEventListener('click', closeArchiModal);
+  $id('archi-scan').addEventListener('click', runArcheScan);
   $id('modal-archi-overlay').addEventListener('click', (e) => {
     if (e.target === $id('modal-archi-overlay')) closeArchiModal();
   });
@@ -1790,6 +2521,73 @@ function setupEventListeners() {
     if (e.target === $id('modal-settings-overlay')) closeSettingsModal();
   });
   $id('settings-save').addEventListener('click', saveSettings);
+  // Settings tabs
+  document.querySelectorAll('.settings-tab').forEach(btn => {
+    btn.addEventListener('click', () => _switchSettingsTab(btn.dataset.tab));
+  });
+
+  // Lock Setup Modal
+  $id('lock-setup-password-toggle').addEventListener('click', () => {
+    const input = $id('lock-setup-password-input');
+    const btn = $id('lock-setup-password-toggle');
+    if (input.type === 'password') {
+      input.type = 'text';
+      btn.textContent = '👁‍🗨';
+    } else {
+      input.type = 'password';
+      btn.textContent = '👁';
+    }
+  });
+  $id('lock-setup-confirm').addEventListener('click', async () => {
+    const password = $id('lock-setup-password-input').value;
+    await saveLockPassword(password);
+  });
+  $id('lock-setup-cancel').addEventListener('click', closeLockSetupModal);
+  $id('lock-setup-password-input').addEventListener('keypress', async (e) => {
+    if (e.key === 'Enter') {
+      const password = $id('lock-setup-password-input').value;
+      await saveLockPassword(password);
+    }
+  });
+
+  // Lock Screen Modal
+  $id('lock-screen-password-toggle').addEventListener('click', () => {
+    const input = $id('lock-screen-password-input');
+    const btn = $id('lock-screen-password-toggle');
+    if (input.type === 'password') {
+      input.type = 'text';
+      btn.textContent = '👁‍🗨';
+    } else {
+      input.type = 'password';
+      btn.textContent = '👁';
+    }
+  });
+  $id('lock-screen-unlock').addEventListener('click', async () => {
+    const password = $id('lock-screen-password-input').value;
+    await verifyPasswordAndUnlock(password);
+  });
+  $id('lock-screen-password-input').addEventListener('keypress', async (e) => {
+    if (e.key === 'Enter') {
+      const password = $id('lock-screen-password-input').value;
+      await verifyPasswordAndUnlock(password);
+    }
+  });
+
+  // Settings Security tab - password input
+  const settingsPasswordToggle = $id('settings-password-toggle');
+  if (settingsPasswordToggle) {
+    settingsPasswordToggle.addEventListener('click', () => {
+      const input = $id('settings-password-input');
+      const btn = $id('settings-password-toggle');
+      if (input.type === 'password') {
+        input.type = 'text';
+        btn.textContent = '👁‍🗨';
+      } else {
+        input.type = 'password';
+        btn.textContent = '👁';
+      }
+    });
+  }
 }
 
 function selectTrackType(type) {
@@ -1939,7 +2737,7 @@ function refineSpec(planId) {
   });
 }
 
-/** Rewrite spec with LLM, then immediately generate tasks — single continuous output. */
+/** Rewrite spec with LLM, then immediately generate tasks - single continuous output. */
 function refineAndGenerate(planId) {
   state.outputText = '';
   state.outputRunning = true;
@@ -1950,7 +2748,7 @@ function refineAndGenerate(planId) {
     onMeta: (t) => { _setOutputHeader('▶ ' + t); },
     onText: _appendOutput,
     onDone: () => {
-      _appendOutput('\n────────────────────────────────────────\n');
+      _appendOutput('\n----------------------------------------\n');
       _setOutputHeader('▶ Generating tasks…');
       _startStream(`/api/tracks/${planId}/tasks/generate`, {
         onMeta: (t) => { _setOutputHeader('▶ ' + t); },
@@ -1963,7 +2761,7 @@ function refineAndGenerate(planId) {
   });
 }
 
-// ── Spec interview ──────────────────────────────────────────────────────────
+// -- Spec interview ----------------------------------------------------------
 function openInterviewStart(planId) {
   _switchToOutputTab();
   state.outputText = '';
@@ -2038,7 +2836,7 @@ async function finishInterview() {
   await _runInterviewTurn(state.interview.planId, state.interview.description, state.interview.qa);
 }
 
-// ── Code review ─────────────────────────────────────────────────────────────
+// -- Code review -------------------------------------------------------------
 function uiReviewTask() {
   const t = _getUiTask();
   if (t) reviewTask(state.selectedPlanId, t.id);
@@ -2070,7 +2868,7 @@ function reviewTask(planId, taskId) {
           state.reviewTask.issues = state.outputText.trim();
         }
         $id('review-actions').classList.remove('hidden');
-        showToast('✗ Review failed — create a rework task below');
+        showToast('✗ Review failed - create a rework task below');
       }
     },
   });
@@ -2089,7 +2887,7 @@ async function createReworkTask() {
   }
 }
 
-// ── Add task modal ───────────────────────────────────────────────────────────
+// -- Add task modal -----------------------------------------------------------
 function openAddTaskModal(trackId) {
   state.addTaskTrackId = trackId;
   $id('add-task-title').value = '';
@@ -2129,7 +2927,7 @@ async function confirmAddTask() {
   await renderPanelFor(trackId);
 }
 
-// ── Track done ────────────────────────────────────────────────────────────────
+// -- Track done ----------------------------------------------------------------
 async function confirmDoneTrack(trackId) {
   if (!confirm('Mark this track as done?')) return;
   const track = await api.doneTrack(trackId);
@@ -2139,7 +2937,7 @@ async function confirmDoneTrack(trackId) {
   }
 }
 
-// ── Utils ──────────────────────────────────────────────────────────────────
+// -- Utils ------------------------------------------------------------------
 function stripAnsi(str) {
   return str.replace(/\x1b\[[0-9;]*[mGKHF]/g, '').replace(/\r/g, '');
 }
@@ -2164,7 +2962,7 @@ function escHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
-// ── Resizable console ──────────────────────────────────────────────────────
+// -- Resizable console ------------------------------------------------------
 function setupResizableConsole() {
   const handle = $id('console-resize-handle');
   const wrapper = $id('console-wrapper');
@@ -2207,7 +3005,7 @@ function setupResizableConsole() {
   });
 }
 
-// ── Themes ─────────────────────────────────────────────────────────────────
+// -- Themes -----------------------------------------------------------------
 const THEMES = {
   dark: {
     label: 'Dark',
@@ -2217,7 +3015,7 @@ const THEMES = {
       '--border': '#2a2a2a', '--text': '#e0e0e0', '--text-dim': '#666',
       '--text-muted': '#999', '--green': '#3fb950', '--yellow': '#d29922',
       '--red': '#f85149', '--blue': '#58a6ff', '--cyan': '#39c5cf',
-      '--purple': '#bc8cff',
+      '--purple': '#bc8cff', '--accent': '#7c6af7', '--accent-hover': '#6a5acd',
     },
     term: { background: '#0d0d0d', foreground: '#e0e0e0', cursor: '#39c5cf', selection: '#2a4a5a' },
   },
@@ -2229,7 +3027,7 @@ const THEMES = {
       '--border': '#d0d0cc', '--text': '#1a1a1a', '--text-dim': '#888',
       '--text-muted': '#555', '--green': '#1a7f37', '--yellow': '#9a6700',
       '--red': '#cf222e', '--blue': '#0550ae', '--cyan': '#1b7c83',
-      '--purple': '#7a3e9d',
+      '--purple': '#7a3e9d', '--accent': '#6f42c1', '--accent-hover': '#5a32a8',
     },
     term: { background: '#f5f5f0', foreground: '#1a1a1a', cursor: '#1b7c83', selection: '#c8e1e4' },
   },
@@ -2241,7 +3039,7 @@ const THEMES = {
       '--border': '#3d3830', '--text': '#e8e0d4', '--text-dim': '#6e6358',
       '--text-muted': '#a89880', '--green': '#6ab06a', '--yellow': '#e0945a',
       '--red': '#e06a5a', '--blue': '#7aaedd', '--cyan': '#7ac4c0',
-      '--purple': '#c4a0e0',
+      '--purple': '#c4a0e0', '--accent': '#d4a06a', '--accent-hover': '#b88a52',
     },
     term: { background: '#1e1b18', foreground: '#e8e0d4', cursor: '#e0945a', selection: '#3d3020' },
   },
@@ -2253,7 +3051,7 @@ const THEMES = {
       '--border': '#363250', '--text': '#dcd8ec', '--text-dim': '#6a6480',
       '--text-muted': '#9a94b8', '--green': '#7acc88', '--yellow': '#d4b06a',
       '--red': '#e07a88', '--blue': '#7aaae0', '--cyan': '#7ac4d4',
-      '--purple': '#c0a0f0',
+      '--purple': '#c0a0f0', '--accent': '#b8a0e8', '--accent-hover': '#9a88c8',
     },
     term: { background: '#181620', foreground: '#dcd8ec', cursor: '#c0a0f0', selection: '#362850' },
   },
@@ -2265,7 +3063,7 @@ const THEMES = {
       '--border': '#434c5e', '--text': '#eceff4', '--text-dim': '#616e88',
       '--text-muted': '#9099a8', '--green': '#a3be8c', '--yellow': '#ebcb8b',
       '--red': '#bf616a', '--blue': '#81a1c1', '--cyan': '#88c0d0',
-      '--purple': '#b48ead',
+      '--purple': '#b48ead', '--accent': '#88c0d0', '--accent-hover': '#78b0c0',
     },
     term: { background: '#242933', foreground: '#eceff4', cursor: '#88c0d0', selection: '#434c5e' },
   },
@@ -2277,7 +3075,7 @@ const THEMES = {
       '--border': '#1a5060', '--text': '#e0ddd0', '--text-dim': '#4a6070',
       '--text-muted': '#6a8090', '--green': '#859900', '--yellow': '#b58900',
       '--red': '#dc322f', '--blue': '#268bd2', '--cyan': '#2aa198',
-      '--purple': '#6c71c4',
+      '--purple': '#6c71c4', '--accent': '#268bd2', '--accent-hover': '#1a75a8',
     },
     term: { background: '#002b36', foreground: '#e0ddd0', cursor: '#2aa198', selection: '#1a4050' },
   },
@@ -2329,12 +3127,123 @@ function closeThemeModal() {
   $id('modal-theme-overlay').classList.add('hidden');
 }
 
-// ── Settings modal ───────────────────────────────────────────────────────────
+// -- Settings modal -----------------------------------------------------------
+let _settingsActiveTab = 'paths';
+let _settingsModelsData = null;
+
+function _switchSettingsTab(tab) {
+  _settingsActiveTab = tab;
+  document.querySelectorAll('.settings-tab').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.tab === tab);
+  });
+  $id('settings-tab-paths').classList.toggle('hidden', tab !== 'paths');
+  $id('settings-tab-models').classList.toggle('hidden', tab !== 'models');
+  $id('settings-tab-security').classList.toggle('hidden', tab !== 'security');
+}
+
+async function _loadModelsTab() {
+  // Load tools inventory (all tools with availability flag)
+  let toolsData = null;
+  try { toolsData = await apiFetch('/api/config/tools'); } catch (_) {}
+  const toolsTable = $id('settings-tools-table');
+  toolsTable.innerHTML = '';
+  for (const [alias, info] of Object.entries((toolsData || {}).tools || {})) {
+    const chip = document.createElement('div');
+    chip.className = 'settings-tool-chip' + (info.available ? ' available' : '');
+    chip.title = info.description || alias;
+    chip.innerHTML = `<span class="settings-tool-chip-dot"></span>${alias}`;
+    toolsTable.appendChild(chip);
+  }
+
+  // Load phase→model config
+  try {
+    _settingsModelsData = await apiFetch('/api/settings/models');
+  } catch (_) {
+    _settingsModelsData = null;
+  }
+  const container = $id('settings-models-rows');
+  container.innerHTML = '';
+  if (!_settingsModelsData || !Object.keys(_settingsModelsData.tools || {}).length) {
+    $id('settings-models-unavailable').classList.remove('hidden');
+    return;
+  }
+  $id('settings-models-unavailable').classList.add('hidden');
+
+  const { tools, current, phases, defaults } = _settingsModelsData;
+  const toolAliases = Object.keys(tools);
+
+  // Header row
+  ['Phase', 'Tool', 'Model'].forEach(h => {
+    const hdr = document.createElement('div');
+    hdr.className = 'settings-grid-header';
+    hdr.textContent = h;
+    container.appendChild(hdr);
+  });
+
+  for (const phase of (phases || [])) {
+    const currentVal = current[phase] || defaults[phase] || '';
+    let currentTool = toolAliases[0] || '';
+    let currentModel = '';
+    if (currentVal.includes('/')) {
+      [currentTool, currentModel] = currentVal.split('/');
+    }
+
+    // Phase label
+    const label = document.createElement('div');
+    label.className = 'settings-phase-label';
+    label.textContent = phase;
+
+    // Tool select
+    const toolSel = document.createElement('select');
+    toolSel.id = `settings-tool-${phase}`;
+    for (const toolAlias of toolAliases) {
+      const opt = document.createElement('option');
+      opt.value = toolAlias;
+      opt.textContent = toolAlias;
+      opt.title = tools[toolAlias]?.description || toolAlias;
+      if (toolAlias === currentTool) opt.selected = true;
+      toolSel.appendChild(opt);
+    }
+
+    // Model select - cascades from tool select
+    const modelSel = document.createElement('select');
+    modelSel.id = `settings-model-${phase}`;
+
+    const populateModels = (toolAlias, selectedModel) => {
+      modelSel.innerHTML = '';
+      for (const [mAlias, mDesc] of Object.entries(tools[toolAlias]?.models || {})) {
+        const opt = document.createElement('option');
+        opt.value = mAlias;
+        opt.textContent = `${mAlias} - ${mDesc}`;
+        if (mAlias === selectedModel) opt.selected = true;
+        modelSel.appendChild(opt);
+      }
+    };
+    populateModels(currentTool || toolAliases[0], currentModel);
+    toolSel.addEventListener('change', () => populateModels(toolSel.value, ''));
+
+    container.appendChild(label);
+    container.appendChild(toolSel);
+    container.appendChild(modelSel);
+  }
+}
+
 async function openSettingsModal() {
   try {
     const data = await apiFetch('/api/settings/protected-paths');
     $id('settings-protected-paths').value = (data.protected_paths || []).join('\n');
   } catch (_) {}
+  // Load password status
+  try {
+    const pwStatus = await api.getPasswordStatus();
+    if (pwStatus && pwStatus.has_password) {
+      $id('settings-password-input').placeholder = 'Leave empty to keep current password';
+    } else {
+      $id('settings-password-input').placeholder = 'Enter password (min 4 chars)';
+    }
+  } catch (_) {}
+  _switchSettingsTab('paths');
+  await _loadModelsTab();
   $id('modal-settings-overlay').classList.remove('hidden');
 }
 
@@ -2343,18 +3252,41 @@ function closeSettingsModal() {
 }
 
 async function saveSettings() {
-  const raw = $id('settings-protected-paths').value;
-  const paths = raw.split('\n').map(l => l.trim()).filter(Boolean);
-  await apiFetch('/api/settings/protected-paths', {
-    method: 'POST',
-    body: JSON.stringify({ protected_paths: paths }),
-  });
-  closeSettingsModal();
+  try {
+    if (_settingsActiveTab === 'paths') {
+      const raw = $id('settings-protected-paths').value;
+      const paths = raw.split('\n').map(l => l.trim()).filter(Boolean);
+      await apiFetch('/api/settings/protected-paths', {
+        method: 'POST',
+        body: JSON.stringify({ protected_paths: paths }),
+      });
+    } else if (_settingsActiveTab === 'models' && _settingsModelsData) {
+      const models = {};
+      for (const phase of (_settingsModelsData.phases || [])) {
+        const toolSel = $id(`settings-tool-${phase}`);
+        const modelSel = $id(`settings-model-${phase}`);
+        if (toolSel && modelSel) models[phase] = `${toolSel.value}/${modelSel.value}`;
+      }
+      await apiFetch('/api/settings/models', {
+        method: 'PATCH',
+        body: JSON.stringify({ models }),
+      });
+    } else if (_settingsActiveTab === 'security') {
+      const password = $id('settings-password-input').value;
+      if (password) {
+        await updateSessionPassword(password);
+      }
+    }
+    closeSettingsModal();
+    showToast('Settings saved');
+  } catch (err) {
+    showToast(`Save failed: ${err.message || err}`);
+  }
 }
 
 function _initThemeListeners() {
   _buildThemeModal();
-  // Apply a quick visual default without saving — the authoritative theme comes from the server in init().
+  // Apply a quick visual default without saving - the authoritative theme comes from the server in init().
   const earlyKey = Object.keys(localStorage).find(k => k.startsWith('arche-theme-'));
   const earlyTheme = earlyKey ? localStorage.getItem(earlyKey) : null;
   _applyThemeCss(earlyTheme && THEMES[earlyTheme] ? earlyTheme : 'dark');
@@ -2371,7 +3303,159 @@ function setupTheme(projectName) {
   if (saved && THEMES[saved]) _applyThemeCss(saved);
 }
 
-// ── Boot ───────────────────────────────────────────────────────────────────
+// -- Password Lock -----------------------------------------------------------
+async function setupLockScreen() {
+  // Check if password is set
+  const status = await api.getPasswordStatus();
+  if (!status) return;
+
+  state.hasPassword = status.has_password;
+
+  // Check localStorage for unlock status (shared across tabs, private browsing friendly)
+  // Default: if password exists, assume locked unless explicitly marked as unlocked
+  const isUnlockedSession = localStorage.getItem('isLocked') === 'false';
+
+  if (state.hasPassword && !isUnlockedSession) {
+    state.sessionLocked = true;
+    openLockScreenModal();
+  }
+
+  updateLockButtonEmoji();
+}
+
+function updateLockButtonEmoji() {
+  const btn = $id('btn-lock');
+  if (!btn) return;
+  btn.textContent = state.sessionLocked ? '🔒' : '🔓';
+}
+
+function setupLockStorageSync() {
+  // Sync lock state across tabs when localStorage changes
+  window.addEventListener('storage', (event) => {
+    if (event.key === 'isLocked') {
+      const isNowLocked = event.newValue === 'true';
+
+      if (isNowLocked && state.hasPassword && !state.sessionLocked) {
+        // Lock was activated in another tab - lock this tab too
+        state.sessionLocked = true;
+        openLockScreenModal();
+        updateLockButtonEmoji();
+      } else if (!isNowLocked && state.sessionLocked) {
+        // Lock was deactivated in another tab - unlock this tab too
+        state.sessionLocked = false;
+        closeLockScreenModal();
+        updateLockButtonEmoji();
+      }
+    }
+  });
+}
+
+function openLockSetupModal() {
+  $id('lock-setup-password-input').value = '';
+  $id('lock-setup-password-input').type = 'password';
+  $id('lock-setup-password-toggle').textContent = '👁';
+  $id('modal-lock-setup-overlay').classList.remove('hidden');
+  $id('lock-setup-password-input').focus();
+}
+
+function closeLockSetupModal() {
+  $id('modal-lock-setup-overlay').classList.add('hidden');
+}
+
+function openLockScreenModal() {
+  $id('lock-screen-password-input').value = '';
+  $id('lock-screen-password-input').type = 'password';
+  $id('lock-screen-password-toggle').textContent = '👁';
+  $id('lock-screen-error').classList.add('hidden');
+  $id('modal-lock-screen-overlay').classList.remove('hidden');
+  $id('lock-screen-password-input').focus();
+}
+
+function closeLockScreenModal() {
+  $id('modal-lock-screen-overlay').classList.add('hidden');
+}
+
+async function toggleLockSession() {
+  // Close settings dropdown
+  $id('settings-dropdown').classList.add('hidden');
+
+  if (!state.hasPassword) {
+    // First time - open setup modal
+    openLockSetupModal();
+  } else {
+    // Already has password - lock the session
+    state.sessionLocked = true;
+    localStorage.setItem('isLocked', 'true');
+    openLockScreenModal();
+  }
+}
+
+async function saveLockPassword(password) {
+  if (!password || password.length < 4) {
+    alert('Password must be at least 4 characters');
+    return false;
+  }
+
+  try {
+    const result = await api.setupPassword(password);
+    if (result && result.ok) {
+      state.hasPassword = true;
+      state.sessionLocked = true;
+      localStorage.setItem('isLocked', 'true');
+      closeLockSetupModal();
+      updateLockButtonEmoji();
+      showToast('Password set and session locked');
+      return true;
+    }
+  } catch (e) {
+    console.error('Failed to set password', e);
+  }
+  return false;
+}
+
+async function verifyPasswordAndUnlock(password) {
+  try {
+    const result = await api.verifyPassword(password);
+    if (result && result.ok) {
+      state.sessionLocked = false;
+      localStorage.setItem('isLocked', 'false');
+      closeLockScreenModal();
+      updateLockButtonEmoji();
+      showToast('Session unlocked');
+      return true;
+    } else {
+      $id('lock-screen-error').classList.remove('hidden');
+      $id('lock-screen-password-input').value = '';
+      return false;
+    }
+  } catch (e) {
+    console.error('Failed to verify password', e);
+    $id('lock-screen-error').classList.remove('hidden');
+    return false;
+  }
+}
+
+async function updateSessionPassword(password) {
+  if (!password || password.length < 4) {
+    alert('Password must be at least 4 characters');
+    return false;
+  }
+
+  try {
+    const result = await api.updatePassword(password);
+    if (result && result.ok) {
+      state.hasPassword = true;
+      $id('settings-password-input').value = '';
+      showToast('Password updated');
+      return true;
+    }
+  } catch (e) {
+    console.error('Failed to update password', e);
+  }
+  return false;
+}
+
+// -- Boot -------------------------------------------------------------------
 window.addEventListener('DOMContentLoaded', init);
 window.applyTheme = applyTheme;
 window.closeThemeModal = closeThemeModal;
@@ -2424,4 +3508,7 @@ window.confirmRunTask = confirmRunTask;
 window.openAddTaskModal = openAddTaskModal;
 window.closeAddTaskModal = closeAddTaskModal;
 window.confirmAddTask = confirmAddTask;
+window.toggleLockSession = toggleLockSession;
+window.closeLockSetupModal = closeLockSetupModal;
+window.closeLockScreenModal = closeLockScreenModal;
 window.confirmDoneTrack = confirmDoneTrack;

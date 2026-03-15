@@ -33,6 +33,9 @@
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
   <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+  <!-- CodeMirror -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/dracula.min.css">
 </head>
 <body>
   <div id="app">
@@ -42,7 +45,7 @@
       <span id="project-name" class="project-name">loading...</span>
       <span class="header-actions">
         <button id="btn-new-plan" class="btn-sm">+ New track</button>
-        <button id="btn-web-refresh" class="btn-sm btn-ghost" title="Refresh">↻</button>
+        <button id="btn-lock" class="btn-ghost btn-sm" title="Session Lock">🔓</button>
         <button id="btn-docs" class="btn-sm btn-ghost" title="Documentation">❓</button>
         <div class="settings-menu-wrap">
           <button id="btn-settings-cog" class="btn-ghost btn-sm" title="Settings">⚙</button>
@@ -63,6 +66,7 @@
         <div class="sidebar-label">TRACKS</div>
         <div id="plan-list"></div>
       </aside>
+      <button id="sidebar-toggle" title="Toggle sidebar">‹</button>
 
       <!-- Central panel -->
       <section id="panel">
@@ -70,10 +74,15 @@
         <div id="plan-tabs">
           <button class="tab" data-tab="spec">Spec</button>
           <button class="tab active" data-tab="tasks">Tasks</button>
+          <button class="tab" data-tab="editor">Editor</button>
+          <button class="tab" data-tab="instructions">Instructions</button>
         </div>
         <div id="tab-content">
           <div id="tab-tasks" class="tab-pane active"></div>
           <div id="tab-spec" class="tab-pane"></div>
+          <div id="tab-editor" class="tab-pane"></div>
+          <div id="tab-instructions" class="tab-pane"></div>
+        <div id="tab-output" class="tab-pane">
           <div id="tab-output" class="tab-pane">
             <!-- Task output is now displayed in dedicated terminals in the terminals section -->
             <!-- Interview: start panel -->
@@ -272,6 +281,7 @@
       <div class="docs-header">
         <h3>Architecture Blueprint</h3>
         <span id="archi-hint" class="archi-hint"></span>
+        <button id="archi-scan" class="btn-ghost btn-sm" title="Scan project architecture">⚡ Scan</button>
         <button id="archi-close" class="btn-ghost btn-sm">✕</button>
       </div>
       <pre id="archi-content" class="memory-content">(empty)</pre>
@@ -391,27 +401,58 @@
 
   <!-- Settings modal -->
   <div id="modal-settings-overlay" class="hidden modal-overlay">
-    <div class="modal" id="modal-settings" style="max-width:520px">
+    <div class="modal settings-modal" id="modal-settings">
       <div class="docs-header">
         <h3>⚙ Project Settings</h3>
         <button id="settings-close" class="btn-ghost btn-sm">✕</button>
       </div>
-      <div style="padding:16px 0 8px">
-        <label style="font-size:13px;font-weight:600;color:var(--text)">
-          Protected paths <span style="font-weight:400;color:var(--text-dim)">(read-only for LLM)</span>
+
+      <!-- Tab bar -->
+      <div class="settings-tab-bar">
+        <button class="settings-tab active" data-tab="paths">Protected paths</button>
+        <button class="settings-tab" data-tab="models">CLI &amp; Models</button>
+        <button class="settings-tab" data-tab="security">🔐 Security</button>
+      </div>
+
+      <!-- Tab: Protected paths -->
+      <div id="settings-tab-paths">
+        <label class="settings-section-label">
+          Protected paths <span class="modal-hint">(read-only for LLM)</span>
         </label>
-        <div style="font-size:12px;color:var(--text-muted);margin:6px 0 10px">
+        <div class="settings-section-hint">
           One path per line. Supports glob patterns (e.g. <code style="color:var(--cyan)">vendor/**</code>).
           The LLM can read these files for context but cannot modify them.
         </div>
         <textarea id="settings-protected-paths"
-          style="width:100%;box-sizing:border-box;height:140px;background:var(--bg);border:1px solid var(--border);
-                 border-radius:4px;color:var(--text);font-family:monospace;font-size:12px;padding:8px;resize:vertical"
           placeholder="lib/otherprojects/flq_api/vendor/**&#10;lib/otherprojects/flq_api/routes/promo.py"></textarea>
       </div>
-      <div style="display:flex;justify-content:flex-end;gap:8px;padding-top:8px">
+
+      <!-- Tab: CLI & Models -->
+      <div id="settings-tab-models" class="hidden">
+        <div class="settings-section-label">Available CLI tools</div>
+        <div id="settings-tools-table" class="settings-tools-table"></div>
+
+        <div class="settings-section-label">Phase → model</div>
+        <div class="settings-section-hint">Assign a CLI tool &amp; model to each phase.</div>
+        <div id="settings-models-rows" class="settings-models-grid"></div>
+        <div id="settings-models-unavailable" class="hidden settings-section-hint">
+          No LLM CLIs detected. Make sure <code>claude</code>, <code>gemini</code>, or <code>codex</code> are in PATH.
+        </div>
+      </div>
+
+      <!-- Tab: Security -->
+      <div id="settings-tab-security" class="hidden">
+        <div class="settings-section-label">Session Password</div>
+        <div class="settings-section-hint">Set a password to protect access to this IHM. The password is stored in plaintext (no real security).</div>
+        <div class="password-input-row">
+          <input id="settings-password-input" type="password" placeholder="Enter password (min 4 chars)">
+          <button id="settings-password-toggle" class="btn-ghost btn-sm password-toggle">👁</button>
+        </div>
+      </div>
+
+      <div class="settings-modal-actions">
         <button class="btn-sm" id="settings-cancel">Cancel</button>
-        <button class="btn-primary" id="settings-save" style="padding:5px 16px;font-size:13px">Save</button>
+        <button class="btn-primary" id="settings-save">Save</button>
       </div>
     </div>
   </div>
@@ -427,6 +468,48 @@
     </div>
   </div>
 
+  <!-- Lock Setup Modal (first-time password setup) -->
+  <div id="modal-lock-setup-overlay" class="hidden modal-overlay">
+    <div class="modal modal-lock">
+      <h3>🔐 Set Up Session Password</h3>
+      <p class="modal-hint" style="margin-bottom: 16px;">Create a password to protect this session. You'll be prompted to enter it after locking.</p>
+      <div class="password-input-row">
+        <input id="lock-setup-password-input" type="password" placeholder="Enter password (min 4 chars)">
+        <button id="lock-setup-password-toggle" class="btn-ghost btn-sm password-toggle">👁</button>
+      </div>
+      <div class="modal-actions">
+        <button id="lock-setup-cancel" class="btn-ghost">Cancel</button>
+        <button id="lock-setup-confirm" class="btn-primary">Set Password &amp; Lock</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Lock Screen Modal (session locked - blocking overlay) -->
+  <div id="modal-lock-screen-overlay" class="hidden modal-overlay lock-screen-overlay">
+    <div class="modal modal-lock-screen">
+      <h3>🔐 Session Locked</h3>
+      <p class="modal-hint" style="margin-bottom: 16px;">Enter your password to unlock this session.</p>
+      <div class="password-input-row">
+        <input id="lock-screen-password-input" type="password" placeholder="Enter password">
+        <button id="lock-screen-password-toggle" class="btn-ghost btn-sm password-toggle">👁</button>
+      </div>
+      <div id="lock-screen-error" class="hidden lock-screen-error">Incorrect password, please try again.</div>
+      <div class="modal-actions">
+        <button id="lock-screen-unlock" class="btn-primary">Unlock</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- CodeMirror core + modes -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/python/python.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/javascript/javascript.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/css/css.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/xml/xml.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/htmlmixed/htmlmixed.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/yaml/yaml.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/markdown/markdown.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/shell/shell.min.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

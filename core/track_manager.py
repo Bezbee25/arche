@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import re
+import shutil
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 import yaml
+
+_MODELS_DEFAULT_YAML = Path(__file__).parent / "models_default.yaml"
 
 STORAGE_DIR = Path(".arche-storage")
 TRACKS_DIR = STORAGE_DIR / "tracks"
@@ -62,8 +65,33 @@ def load_project() -> dict:
     return load_yaml(PROJECT_FILE)
 
 
+def load_instructions() -> dict:
+    """Load instructions manifest to ensure it exists and is ready."""
+    try:
+        from core.instruction_store import InstructionStore
+        store = InstructionStore()
+        manifest = store.load_manifest()
+        # Try to use pydantic dict() method, fall back to dict() if it fails
+        try:
+            return manifest.dict() if manifest else {"instructions": [], "version": "1.0.0"}
+        except AttributeError:
+            # If manifest doesn't have dict() method, return as dict
+            return dict(manifest) if manifest else {"instructions": [], "version": "1.0.0"}
+    except ImportError:
+        # If pydantic is not available, return empty manifest
+        return {"instructions": [], "version": "1.0.0"}
+
+
 def save_project(data: dict) -> None:
     save_yaml(PROJECT_FILE, data)
+    # Load and persist instructions if they exist
+    try:
+        from core.instruction_store import InstructionStore
+        store = InstructionStore()
+        store.load_manifest()  # Ensure manifest is loaded
+    except ImportError:
+        # pydantic not available, skip instructions loading
+        pass
 
 
 def get_current_track_id() -> Optional[str]:
@@ -147,6 +175,11 @@ def new_track(name: str, phase: str = "spec", track_type: str = "feature") -> di
     spec_path = _spec_path(track_id)
     if not spec_path.exists():
         spec_path.write_text(f"# Spec: {name}\n\n")
+
+    # Copy model registry for per-track overrides
+    models_dst = plan_dir / "models.yaml"
+    if not models_dst.exists() and _MODELS_DEFAULT_YAML.exists():
+        shutil.copy(_MODELS_DEFAULT_YAML, models_dst)
 
     set_current_track_id(track_id)
     return meta

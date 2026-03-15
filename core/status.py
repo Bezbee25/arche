@@ -116,7 +116,7 @@ def show_resume() -> None:
 
     if not plan:
         console.print("[yellow]No active track.[/yellow] Use [bold]arche track new <name>[/bold] to start.")
-        show_plan_list()
+        show_track_list()
         return
 
     track_id = plan["id"]
