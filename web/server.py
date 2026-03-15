@@ -1708,7 +1708,7 @@ def create_app() -> FastAPI:
 
     @app.get("/api/instructions/list")
     def list_instructions():
-        """List all available instruction templates (global built-ins + local project)."""
+        """List all available instruction templates (global built-ins + local project + user store)."""
         instructions = []
 
         # Global built-in instructions (from arche package)
@@ -1729,6 +1729,21 @@ def create_app() -> FastAPI:
                     instructions.append(_parse_md_instruction(instruction_file, "local", "local"))
                 except Exception:
                     continue
+
+        # User store instructions (manifest.json)
+        if instruction_store:
+            try:
+                for inst in instruction_store.get_all_instructions():
+                    instructions.append({
+                        "id": inst.id,
+                        "name": inst.name,
+                        "category": inst.category,
+                        "description": inst.description,
+                        "tags": inst.tags,
+                        "source": "user",
+                    })
+            except Exception:
+                pass
 
         return {"instructions": instructions}
 

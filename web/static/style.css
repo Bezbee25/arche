@@ -860,6 +860,84 @@ body {
   border-color: var(--cyan);
 }
 
+.btn-new-instruction {
+  padding: 8px 14px;
+  background: var(--accent);
+  color: var(--text);
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.btn-new-instruction:hover {
+  background: var(--accent-hover);
+}
+
+.new-instruction-form {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 14px;
+  margin-bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.new-instruction-form-row {
+  display: flex;
+  gap: 8px;
+}
+
+.new-instr-field {
+  padding: 7px 10px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 13px;
+  flex: 1;
+}
+
+.new-instr-field:focus {
+  outline: none;
+  border-color: var(--cyan);
+}
+
+.new-instr-full {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.new-instr-content {
+  width: 100%;
+  min-height: 160px;
+  padding: 10px 12px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.new-instr-content:focus {
+  outline: none;
+  border-color: var(--cyan);
+}
+
+.new-instruction-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 #instruction-list {
   flex: 1;
   overflow-y: auto;
@@ -1035,10 +1113,26 @@ body {
   opacity: 0.85;
 }
 
+.instruction-viewer-actions,
 .instruction-editor-actions {
   display: flex;
   gap: 8px;
   justify-content: flex-end;
+}
+
+.btn-secondary {
+  padding: 4px 12px;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.btn-secondary:hover {
+  border-color: var(--cyan);
+  color: var(--cyan);
 }
 
 .btn-save-instruction {

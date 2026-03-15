@@ -952,18 +952,90 @@ async function renderInstructions() {
           <option value="tooling">Tooling</option>
         </select>
         <input type="text" id="instruction-tags" placeholder="Filter by tags..." />
+        <button id="btn-new-instruction" class="btn-new-instruction">+ New</button>
+      </div>
+      <div id="new-instruction-form" class="new-instruction-form" style="display: none;">
+        <div class="new-instruction-form-row">
+          <input type="text" id="new-instr-name" placeholder="Name *" class="new-instr-field" />
+          <select id="new-instr-category" class="new-instr-field">
+            <option value="general">General</option>
+            <option value="languages">Languages</option>
+            <option value="frontend">Frontend</option>
+            <option value="backend">Backend</option>
+            <option value="tooling">Tooling</option>
+          </select>
+          <input type="text" id="new-instr-tags" placeholder="Tags (comma-separated)" class="new-instr-field" />
+        </div>
+        <input type="text" id="new-instr-description" placeholder="Description" class="new-instr-field new-instr-full" />
+        <textarea id="new-instr-content" class="new-instr-content" placeholder="Instruction content *"></textarea>
+        <div class="new-instruction-actions">
+          <button id="btn-save-new-instruction" class="btn-save-instruction">Save</button>
+          <button id="btn-cancel-new-instruction" class="btn-cancel-edit">Cancel</button>
+        </div>
       </div>
       <div id="instruction-list"></div>
     </div>
   `;
-  
+
   // Load and display instructions
   await loadInstructions();
-  
+
   // Set up event listeners
   $id('instruction-search').addEventListener('input', debounce(loadInstructions, 300));
   $id('instruction-category').addEventListener('change', loadInstructions);
   $id('instruction-tags').addEventListener('input', debounce(loadInstructions, 300));
+
+  // New instruction form toggle
+  $id('btn-new-instruction').addEventListener('click', () => {
+    const form = $id('new-instruction-form');
+    const visible = form.style.display !== 'none';
+    form.style.display = visible ? 'none' : 'block';
+    if (!visible) $id('new-instr-name').focus();
+  });
+
+  $id('btn-cancel-new-instruction').addEventListener('click', () => {
+    $id('new-instruction-form').style.display = 'none';
+    clearNewInstructionForm();
+  });
+
+  $id('btn-save-new-instruction').addEventListener('click', async () => {
+    const name = $id('new-instr-name').value.trim();
+    const content = $id('new-instr-content').value.trim();
+    if (!name || !content) {
+      alert('Name and content are required.');
+      return;
+    }
+    const tagsRaw = $id('new-instr-tags').value.trim();
+    const tags = tagsRaw ? tagsRaw.split(',').map(t => t.trim()).filter(Boolean) : [];
+    const instruction = {
+      id: name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, ''),
+      name,
+      description: $id('new-instr-description').value.trim(),
+      category: $id('new-instr-category').value,
+      tags,
+      content,
+      source: 'user',
+      is_enabled: true,
+    };
+    try {
+      const res = await api.addUserInstruction(instruction);
+      if (!res || !res.success) throw new Error('Server returned failure');
+      $id('new-instruction-form').style.display = 'none';
+      clearNewInstructionForm();
+      await loadInstructions();
+    } catch (e) {
+      console.error('Failed to save new instruction:', e);
+      alert('Failed to save instruction: ' + e.message);
+    }
+  });
+}
+
+function clearNewInstructionForm() {
+  $id('new-instr-name').value = '';
+  $id('new-instr-description').value = '';
+  $id('new-instr-tags').value = '';
+  $id('new-instr-content').value = '';
+  $id('new-instr-category').value = 'general';
 }
 
 async function loadInstructions() {
@@ -1024,17 +1096,17 @@ async function loadInstructions() {
         ${tagsHtml}
         <div class="instruction-description">${escHtml(instruction.description || '')}</div>
         <div class="instruction-content" style="display: none;">
-          ${isEditable
-            ? `<textarea class="instruction-editor" data-id="${instruction.id}"></textarea>
-               <div class="instruction-editor-actions">
-                 <button class="btn-save-instruction" data-id="${instruction.id}">Save</button>
-                 <button class="btn-cancel-edit" data-id="${instruction.id}">Cancel</button>
-               </div>`
-            : `<pre class="instruction-viewer"></pre>
-               <div class="instruction-editor-actions">
-                 <button class="btn-cancel-edit" data-id="${instruction.id}">Close</button>
-               </div>`
-          }
+          <pre class="instruction-viewer"></pre>
+          <div class="instruction-viewer-actions">
+            ${isEditable ? `<button class="btn-edit-instruction btn-secondary" data-id="${instruction.id}">Edit</button>` : ''}
+            <button class="btn-cancel-edit" data-id="${instruction.id}">Close</button>
+          </div>
+          ${isEditable ? `
+          <textarea class="instruction-editor" data-id="${instruction.id}" style="display:none;"></textarea>
+          <div class="instruction-editor-actions" style="display:none;">
+            <button class="btn-save-instruction" data-id="${instruction.id}">Save</button>
+            <button class="btn-discard-edit" data-id="${instruction.id}">Discard</button>
+          </div>` : ''}
         </div>
       `;
       listContainer.appendChild(item);
@@ -1057,13 +1129,12 @@ async function loadInstructions() {
       });
     });
 
-    // Set up instruction name click to open editor or viewer
+    // Set up instruction name click to open viewer (read-only for all)
     document.querySelectorAll('.instruction-name').forEach(nameElement => {
       nameElement.addEventListener('click', async function() {
         const instructionId = this.dataset.id;
         const item = this.closest('.instruction-item');
         const contentElement = item.querySelector('.instruction-content');
-        const isEditable = item.dataset.source === 'user';
 
         // Toggle visibility
         if (contentElement.style.display !== 'none') {
@@ -1075,71 +1146,93 @@ async function loadInstructions() {
         this.classList.add('editing');
         contentElement.style.display = 'block';
 
-        if (isEditable) {
-          // Load user instruction content into textarea
-          const textarea = contentElement.querySelector('.instruction-editor');
-          if (textarea && !textarea.value) {
-            try {
+        // Load content into read-only viewer (lazy, only once)
+        const viewer = contentElement.querySelector('.instruction-viewer');
+        if (viewer && !viewer.dataset.loaded) {
+          viewer.textContent = 'Loading…';
+          try {
+            let content = '';
+            if (item.dataset.source === 'user') {
               const data = await api.getUserInstruction(instructionId);
-              textarea.value = data.content || '';
-            } catch (e) {
-              console.error('Failed to load instruction content', e);
-            }
-          }
-        } else {
-          // Load builtin/global instruction content into read-only viewer
-          const viewer = contentElement.querySelector('.instruction-viewer');
-          if (viewer && !viewer.textContent) {
-            viewer.textContent = 'Loading…';
-            try {
+              content = data.content || '';
+            } else {
               const categoryParam = item.dataset.category ? `&category=${encodeURIComponent(item.dataset.category)}` : '';
               const data = await apiFetch(`/api/instructions/get?id=${encodeURIComponent(instructionId)}${categoryParam}`);
-              viewer.textContent = data.content || '';
-            } catch (e) {
-              viewer.textContent = 'Failed to load content.';
-              console.error('Failed to load instruction content', e);
+              content = data.content || '';
             }
+            viewer.textContent = content;
+            viewer.dataset.loaded = '1';
+          } catch (e) {
+            viewer.textContent = 'Failed to load content.';
+            console.error('Failed to load instruction content', e);
           }
         }
       });
     });
 
-    // Set up save button event listeners
+    // Edit button: switch viewer → textarea
+    document.querySelectorAll('.btn-edit-instruction').forEach(editBtn => {
+      editBtn.addEventListener('click', function() {
+        const item = this.closest('.instruction-item');
+        const viewer = item.querySelector('.instruction-viewer');
+        const textarea = item.querySelector('.instruction-editor');
+        const viewerActions = item.querySelector('.instruction-viewer-actions');
+        const editorActions = item.querySelector('.instruction-editor-actions');
+
+        textarea.value = viewer.textContent;
+        viewer.style.display = 'none';
+        viewerActions.style.display = 'none';
+        textarea.style.display = 'block';
+        editorActions.style.display = 'flex';
+        textarea.focus();
+      });
+    });
+
+    // Discard button: switch textarea → viewer
+    document.querySelectorAll('.btn-discard-edit').forEach(discardBtn => {
+      discardBtn.addEventListener('click', function() {
+        const item = this.closest('.instruction-item');
+        const viewer = item.querySelector('.instruction-viewer');
+        const textarea = item.querySelector('.instruction-editor');
+        const viewerActions = item.querySelector('.instruction-viewer-actions');
+        const editorActions = item.querySelector('.instruction-editor-actions');
+
+        textarea.style.display = 'none';
+        editorActions.style.display = 'none';
+        viewer.style.display = 'block';
+        viewerActions.style.display = 'flex';
+      });
+    });
+
+    // Save button: persist and return to viewer
     document.querySelectorAll('.btn-save-instruction').forEach(saveButton => {
       saveButton.addEventListener('click', async function() {
         const instructionId = this.dataset.id;
         const item = this.closest('.instruction-item');
-        const editor = item.querySelector('.instruction-editor');
+        const textarea = item.querySelector('.instruction-editor');
+        const viewer = item.querySelector('.instruction-viewer');
+        const viewerActions = item.querySelector('.instruction-viewer-actions');
+        const editorActions = item.querySelector('.instruction-editor-actions');
         const nameElement = item.querySelector('.instruction-name');
-        
+
         try {
           const instruction = await api.getUserInstruction(instructionId);
-          
-          // Update instruction content
-          instruction.content = editor.value;
-          
-          // Save to backend
+          instruction.content = textarea.value;
           const saveResponse = await api.updateUserInstruction(instruction);
-          
-          if (!saveResponse) {
-            throw new Error('Failed to save instruction to server');
-          }
-          
-          if (saveResponse) {
-            // Close editor
-            item.querySelector('.instruction-content').style.display = 'none';
-            nameElement.classList.remove('editing');
-            
-            // Show success feedback
-            const successMsg = document.createElement('div');
-            successMsg.className = 'instruction-save-success';
-            successMsg.textContent = 'Saved successfully!';
-            item.appendChild(successMsg);
-            
-            setTimeout(() => {
-              successMsg.remove();
-            }, 2000);
-          }
+          if (!saveResponse) throw new Error('Server returned failure');
+
+          // Update viewer with saved content and return to view mode
+          viewer.textContent = textarea.value;
+          textarea.style.display = 'none';
+          editorActions.style.display = 'none';
+          viewer.style.display = 'block';
+          viewerActions.style.display = 'flex';
+
+          const successMsg = document.createElement('div');
+          successMsg.className = 'instruction-save-success';
+          successMsg.textContent = 'Saved successfully!';
+          item.appendChild(successMsg);
+          setTimeout(() => successMsg.remove(), 2000);
         } catch (error) {
           console.error('Error saving instruction:', error);
           alert('Failed to save instruction: ' + error.message);
@@ -1147,16 +1240,12 @@ async function loadInstructions() {
       });
     });
 
-    // Set up cancel button event listeners
+    // Close button: collapse panel
     document.querySelectorAll('.btn-cancel-edit').forEach(cancelButton => {
       cancelButton.addEventListener('click', function() {
-        const instructionId = this.dataset.id;
         const item = this.closest('.instruction-item');
-        const nameElement = item.querySelector('.instruction-name');
-        
-        // Close editor without saving
         item.querySelector('.instruction-content').style.display = 'none';
-        nameElement.classList.remove('editing');
+        item.querySelector('.instruction-name').classList.remove('editing');
       });
     });
   } catch (error) {
