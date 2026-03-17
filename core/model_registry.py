@@ -118,6 +118,7 @@ class ModelRegistry:
             "model_flag": tool.get("model_flag", ""),
             "system_flag": tool.get("system_flag", ""),
             "tools_flag": tool.get("tools_flag", ""),
+            "file_support": tool.get("file_support", {"images": False}),
         }
 
     # ------------------------------------------------------------------ detection

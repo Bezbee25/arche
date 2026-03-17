@@ -51,7 +51,7 @@ def save_tasks(track_id: str, tasks: list[dict]) -> None:
     save_yaml(_tasks_path(track_id), {"tasks": tasks})
 
 
-def add_task(track_id: str, title: str, description: str = "", notes: str = "", phase_id: str = "") -> dict:
+def add_task(track_id: str, title: str, description: str = "", notes: str = "", phase_id: str = "", files: list = None) -> dict:
     tasks = load_tasks(track_id)
     task = {
         "id": uuid.uuid4().hex[:8],
@@ -59,6 +59,7 @@ def add_task(track_id: str, title: str, description: str = "", notes: str = "", 
         "description": description,
         "notes": notes,
         "phase_id": phase_id,
+        "files": files or [],
         "status": STATUS_TODO,
         "created_at": datetime.now().isoformat(),
         "updated_at": datetime.now().isoformat(),
@@ -80,6 +81,7 @@ def add_tasks_bulk(track_id: str, task_list: list[dict], phase_id: str = "") -> 
             "description": item.get("description", ""),
             "notes": item.get("notes", ""),
             "phase_id": item.get("phase_id", phase_id),
+            "files": item.get("files", []),
             "status": STATUS_TODO,
             "created_at": now,
             "updated_at": now,
@@ -248,7 +250,7 @@ def update_task(track_id: str, task_id: str, updates: dict) -> Optional[dict]:
             break
     if not target:
         return None
-    for field in ("title", "description", "notes", "status", "type"):
+    for field in ("title", "description", "notes", "status", "type", "files"):
         if field in updates and updates[field] is not None:
             target[field] = updates[field]
     target["updated_at"] = datetime.now().isoformat()

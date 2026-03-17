@@ -43,6 +43,9 @@ tools:
     model_flag: "--model"
     system_flag: "--system-prompt"
     tools_flag: "--allowedTools"
+    file_support:
+      images: true
+      image_flag: "--image"
     models:
       opus:
         id: "claude-opus-4-6"
@@ -63,6 +66,8 @@ tools:
     model_flag: "--model"
     system_flag: ""         # Gemini CLI does not support --system-prompt
     tools_flag: ""          # Gemini CLI does not support tool grants
+    file_support:
+      images: false
     models:
       pro-2-5:
         id: "gemini-2.5-pro"
@@ -92,6 +97,9 @@ tools:
     model_flag: ""          # Codex CLI selects model internally
     system_flag: ""
     tools_flag: ""
+    file_support:
+      images: true
+      image_flag: "--image"
     models:
       default:
         id: "codex"
@@ -106,6 +114,8 @@ tools:
     model_flag: ""          # Vibe CLI selects model internally
     system_flag: ""
     tools_flag: ""
+    file_support:
+      images: false
     models:
       devstral:
         id: "devstral-small"
@@ -123,6 +133,8 @@ tools:
     model_flag: "--model"
     system_flag: ""
     tools_flag: ""
+    file_support:
+      images: false
     models:
       opus:
         id: "claude-opus-4.6"

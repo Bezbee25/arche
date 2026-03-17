@@ -41,6 +41,7 @@ _FALLBACK_RESOLVED = {
     "model_flag":      "--model",
     "system_flag":     "--system-prompt",
     "tools_flag":      "--allowedTools",
+    "file_support":    {"images": True, "image_flag": "--image"},
 }
 
 
@@ -132,6 +133,7 @@ def _build_cmd_from_resolved(
     system: Optional[str],
     allowed_tools: list[str],
     interactive: bool = False,
+    image_files: list[str] = None,
 ) -> list[str]:
     """Build a CLI command list from a resolved model config."""
     binary = resolved["binary"]
@@ -150,6 +152,19 @@ def _build_cmd_from_resolved(
     tools_flag = resolved.get("tools_flag", "")
     if tools_flag and allowed_tools:
         cmd += [tools_flag, ",".join(allowed_tools)]
+
+    if image_files:
+        file_support = resolved.get("file_support", {})
+        image_flag = file_support.get("image_flag", "")
+        if image_flag:
+            for img in image_files:
+                cmd += [image_flag, img]
+        elif not file_support.get("images", False):
+            import logging
+            logging.getLogger(__name__).warning(
+                "image_files provided but tool '%s' does not support images — images will be ignored",
+                binary,
+            )
 
     return cmd
 
@@ -223,24 +238,28 @@ def _hardcoded_resolved(cli: str, model: str) -> dict:
             "interactive_args": [],
             "model_flag": "--model", "system_flag": "--system-prompt",
             "tools_flag": "--allowedTools",
+            "file_support": {"images": True, "image_flag": "--image"},
         }
     if cli == "gemini":
         return {
             "binary": "gemini", "id": model,
             "batch_args": ["-y"], "interactive_args": ["-y"],
             "model_flag": "--model", "system_flag": "", "tools_flag": "",
+            "file_support": {"images": False},
         }
     if cli == "codex":
         return {
             "binary": "codex", "id": model,
             "batch_args": ["-q"], "interactive_args": [],
             "model_flag": "", "system_flag": "", "tools_flag": "",
+            "file_support": {"images": True, "image_flag": "--image"},
         }
     if cli == "vibe":
         return {
             "binary": "vibe", "id": model,
             "batch_args": ["-p"], "interactive_args": [],
             "model_flag": "", "system_flag": "", "tools_flag": "",
+            "file_support": {"images": False},
         }
     if cli in ("copilot", "gh"):
         return {
@@ -248,12 +267,14 @@ def _hardcoded_resolved(cli: str, model: str) -> dict:
             "batch_args": ["-p", "--allow-all"],
             "interactive_args": [],
             "model_flag": "--model", "system_flag": "", "tools_flag": "",
+            "file_support": {"images": False},
         }
     # unknown CLI — pass model via stdin with no flags
     return {
         "binary": cli, "id": model,
         "batch_args": [], "interactive_args": [],
         "model_flag": "", "system_flag": "", "tools_flag": "",
+        "file_support": {"images": False},
     }
 
 
@@ -264,10 +285,12 @@ def call_llm(
     system: Optional[str] = None,
     stream: bool = True,
     tools: Optional[list[str]] = None,
+    image_files: Optional[list[str]] = None,
 ) -> str:
     """Call the appropriate LLM CLI with the given prompt.
 
     `tools` overrides the default tool list for the phase (claude only).
+    `image_files` passes image paths via the CLI image flag (if supported).
     Returns the full output as a string.
     """
     spec = get_model_for_phase(phase, track_meta)
@@ -285,7 +308,7 @@ def call_llm(
             )
 
     allowed_tools = tools if tools is not None else get_tools_for_phase(phase, track_meta)
-    cmd = _build_cmd_from_resolved(resolved, system, allowed_tools)
+    cmd = _build_cmd_from_resolved(resolved, system, allowed_tools, image_files=image_files)
 
     print(f"[router] cmd: {' '.join(cmd)}", flush=True)
 

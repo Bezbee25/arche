@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from rich.console import Console
 
-from core.context import build_task_prompt, extract_archi_notes, append_archi
-from core.track_manager import get_spec
+from core.context import build_task_prompt, extract_archi_notes, append_archi, split_files_by_type
+from core.track_manager import get_spec, get_track_files
 from core.router import call_llm
 from core.session_logger import log
 from core.task_engine import get_current_task
@@ -17,8 +17,14 @@ def run(track_id: str, track_meta: dict, instruction: str) -> str:
     spec = get_spec(track_id)
     current_task = get_current_task(track_id)
 
+    # Collect attached files (track-level + task-level)
+    track_files = get_track_files(track_id)
+    task_files = (current_task or {}).get("files", [])
+    all_files = list(dict.fromkeys(track_files + task_files))
+    text_files, image_files = split_files_by_type(all_files)
+
     # Base : contexte complet du plan
-    base_prompt = build_task_prompt(track_id, track_meta)
+    base_prompt = build_task_prompt(track_id, track_meta, attached_files=text_files)
 
     # Ajouter l'instruction spécifique par-dessus
     prompt = (
@@ -30,7 +36,7 @@ def run(track_id: str, track_meta: dict, instruction: str) -> str:
     console.print(f"\n[bold cyan]Developer[/bold cyan] — phase: {track_meta.get('phase', 'dev')}\n")
     log(track_id, f"Dev: {instruction[:80]}", "DEV")
 
-    result = call_llm(prompt, phase="dev", track_meta=track_meta, stream=True)
+    result = call_llm(prompt, phase="dev", track_meta=track_meta, stream=True, image_files=image_files or None)
 
     # Sauvegarder les notes d'architecture si présentes
     archi_notes = extract_archi_notes(result)

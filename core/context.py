@@ -90,7 +90,21 @@ def append_archi(track_id: str, notes: str) -> None:
         f.write(memory_header + notes.strip() + "\n")
 
 
-def build_task_prompt(track_id: str, track_meta: dict, comment: str = "", selected_instruction_ids: list = None) -> str:
+_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
+
+
+def _is_image_file(path: str) -> bool:
+    return Path(path).suffix.lower() in _IMAGE_EXTENSIONS
+
+
+def split_files_by_type(files: list[str]) -> tuple[list[str], list[str]]:
+    """Split a list of file paths into (text_files, image_files)."""
+    text_files = [f for f in files if not _is_image_file(f)]
+    image_files = [f for f in files if _is_image_file(f)]
+    return text_files, image_files
+
+
+def build_task_prompt(track_id: str, track_meta: dict, comment: str = "", selected_instruction_ids: list = None, attached_files: list = None) -> str:
     """Construit le prompt complet pour exécuter la tâche courante."""
     project = load_project()
     tasks = load_tasks(track_id)
@@ -264,6 +278,24 @@ def build_task_prompt(track_id: str, track_meta: dict, comment: str = "", select
             f"## Instructions sélectionnées\n\n"
             f"> ⚠ Instructions demandées introuvables (ignorées) : {ids_str}"
         )
+
+    # Inject text file contents (images are handled separately via CLI flags)
+    if attached_files:
+        file_parts = []
+        for file_path in attached_files:
+            if _is_image_file(file_path):
+                continue  # images passed via CLI flag, not embedded in prompt
+            p = Path(file_path)
+            if not p.exists():
+                file_parts.append(f"> ⚠ Fichier introuvable : {file_path}")
+            else:
+                try:
+                    content = p.read_text(encoding="utf-8", errors="replace")
+                    file_parts.append(f"### {file_path}\n{content}")
+                except Exception:
+                    file_parts.append(f"> ⚠ Impossible de lire : {file_path}")
+        if file_parts:
+            parts.append("## Fichiers joints\n\n" + "\n\n".join(file_parts))
 
     parts.append(
         "---\n"

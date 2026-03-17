@@ -895,6 +895,52 @@ def track_plan(
     generate_tasks(track_id, track)
 
 
+@track_app.command("files")
+def track_files(
+    add: Optional[str] = typer.Option(None, "--add", "-a", help="Add file path(s), comma-separated"),
+    remove: Optional[str] = typer.Option(None, "--remove", "-r", help="Remove file path(s), comma-separated"),
+    clear: bool = typer.Option(False, "--clear", help="Remove all track-level files"),
+) -> None:
+    """Show or manage track-level attached files (applied to all tasks)."""
+    _require_project()
+    plan = _require_active_track()
+    track_id = plan["id"]
+    from core.track_manager import get_track_files, set_track_files
+
+    current = get_track_files(track_id)
+
+    if clear:
+        set_track_files(track_id, [])
+        console.print("[green]✓ Tous les fichiers du track supprimés.[/green]")
+        return
+
+    if add:
+        new_paths = [f.strip() for f in add.split(",") if f.strip()]
+        merged = list(dict.fromkeys(current + new_paths))
+        set_track_files(track_id, merged)
+        for p in new_paths:
+            console.print(f"[green]+ {p}[/green]")
+        current = merged
+
+    if remove:
+        rm_paths = {f.strip() for f in remove.split(",") if f.strip()}
+        updated = [f for f in current if f not in rm_paths]
+        set_track_files(track_id, updated)
+        for p in rm_paths:
+            console.print(f"[red]- {p}[/red]")
+        current = updated
+
+    if not current:
+        console.print("[dim]Aucun fichier de référence pour ce track.[/dim]")
+        console.print("[dim]Utilisez --add chemin/vers/fichier.md pour en ajouter.[/dim]")
+    else:
+        console.print(f"\n[bold]Fichiers de référence du track[/bold] [dim]({len(current)})[/dim]\n")
+        for f in current:
+            from core.context import _is_image_file
+            icon = "🖼" if _is_image_file(f) else "📄"
+            console.print(f"  {icon}  {f}")
+
+
 @track_app.command("done")
 def track_done() -> None:
     """Mark the active track as DONE."""
@@ -940,8 +986,9 @@ def task_switch(
     track_id = plan["id"]
 
     from core.task_engine import switch_task, load_tasks, STATUS_DONE, get_current_task, start_task, complete_task
-    from core.context import build_task_prompt, extract_archi_notes, append_archi
+    from core.context import build_task_prompt, extract_archi_notes, append_archi, split_files_by_type
     from core.router import call_llm
+    from core.track_manager import get_track_files
     from core.session_logger import log as slog, log_task_done
     from core.status import TASK_STATUS_ICONS
 
@@ -992,11 +1039,16 @@ def task_switch(
             switch_task(track_id, task["id"])
             start_task(track_id, task["id"])
 
-            prompt = build_task_prompt(track_id, plan, comment="")
+            track_files = get_track_files(track_id)
+            task_files = task.get("files", [])
+            all_files = list(dict.fromkeys(track_files + task_files))
+            text_files, image_files = split_files_by_type(all_files)
+
+            prompt = build_task_prompt(track_id, plan, comment="", attached_files=text_files)
             slog(track_id, f"Bulk task {i}: **{task['title']}**", "BULK_RUN")
 
             phase = plan.get("phase", "dev")
-            output = call_llm(prompt, phase=phase, track_meta=plan, stream=True)
+            output = call_llm(prompt, phase=phase, track_meta=plan, stream=True, image_files=image_files or None)
 
             archi_notes = extract_archi_notes(output)
             if archi_notes:
@@ -1049,8 +1101,9 @@ def task_run(
     track_id = plan["id"]
 
     from core.task_engine import get_current_task, start_task, complete_task
-    from core.context import build_task_prompt, extract_archi_notes, append_archi
+    from core.context import build_task_prompt, extract_archi_notes, append_archi, split_files_by_type
     from core.router import call_llm
+    from core.track_manager import get_track_files
     from core.session_logger import log as slog, log_task_done
 
     # S'assurer qu'une tâche est EN COURS
@@ -1067,14 +1120,20 @@ def task_run(
         console.print(f"[dim]Commentaire :[/dim] {comment}")
     console.print(f"[dim]Contexte : spec + archi + tâches faites + session récente → {_model_label(plan)}[/dim]\n")
 
+    # Collect and deduplicate attached files (track-level + task-level)
+    track_files = get_track_files(track_id)
+    task_files = task.get("files", [])
+    all_files = list(dict.fromkeys(track_files + task_files))
+    text_files, image_files = split_files_by_type(all_files)
+
     # Construire le prompt avec tout le contexte
-    prompt = build_task_prompt(track_id, plan, comment=comment or "")
+    prompt = build_task_prompt(track_id, plan, comment=comment or "", attached_files=text_files)
 
     slog(track_id, f"Lancement tâche : **{task['title']}**" + (f"\n\nCommentaire : {comment}" if comment else ""), "RUN")
 
     # Appel LLM (phase dev par défaut, sauf si plan en mode debug/doc)
     phase = plan.get("phase", "dev")
-    output = call_llm(prompt, phase=phase, track_meta=plan, stream=True)
+    output = call_llm(prompt, phase=phase, track_meta=plan, stream=True, image_files=image_files or None)
 
     # Extraire et sauvegarder les notes d'architecture
     archi_notes = extract_archi_notes(output)
@@ -1166,6 +1225,7 @@ def task_block(
 def task_add(
     title: str = typer.Argument(..., help="Task title"),
     description: str = typer.Option("", help="Task description"),
+    files: Optional[str] = typer.Option(None, "--files", "-f", help="Comma-separated list of file paths to attach (e.g. docs/spec.md,assets/img.png)"),
 ) -> None:
     """Add a task manually to the active track."""
     _require_project()
@@ -1173,7 +1233,8 @@ def task_add(
 
     from core.task_engine import add_task, load_tasks
     from core.status import TASK_STATUS_ICONS
-    task = add_task(plan["id"], title, description)
+    file_list = [f.strip() for f in files.split(",") if f.strip()] if files else []
+    task = add_task(plan["id"], title, description, files=file_list)
     all_tasks = load_tasks(plan["id"])
     num = next((i for i, t in enumerate(all_tasks, 1) if t["id"] == task["id"]), "?")
     icon = TASK_STATUS_ICONS.get(task["status"], "·")
@@ -1181,6 +1242,8 @@ def task_add(
     console.print(f"  {icon} [dim]{task['id']}[/dim] {task['title']}  [dim](#{num})[/dim]")
     if task.get("description"):
         console.print(f"     [dim]{task['description']}[/dim]")
+    if task.get("files"):
+        console.print(f"     [dim]Files: {', '.join(task['files'])}[/dim]")
 
 
 @task_app.command("help")
@@ -1273,6 +1336,9 @@ def task_show(
         console.print(f"  Blocked     [red]{task['blocked_reason']}[/red]")
     if task.get("phase_id"):
         console.print(f"  Phase       [dim]{task['phase_id']}[/dim]")
+    if task.get("files"):
+        files_str = ", ".join(task["files"])
+        console.print(f"  Files       [dim]{files_str}[/dim]")
     console.print(Rule(style="dim"))
 
     if edit:
@@ -1280,6 +1346,9 @@ def task_show(
         new_title = Prompt.ask("  Title", default=task["title"])
         new_desc  = Prompt.ask("  Description", default=task.get("description", ""))
         new_notes = Prompt.ask("  Notes", default=task.get("notes", ""))
+        current_files_str = ",".join(task.get("files", []))
+        new_files_str = Prompt.ask("  Files (comma-separated paths)", default=current_files_str)
+        new_files = [f.strip() for f in new_files_str.split(",") if f.strip()] if new_files_str else []
 
         updates = {}
         if new_title != task["title"]:
@@ -1288,6 +1357,8 @@ def task_show(
             updates["description"] = new_desc
         if new_notes != task.get("notes", ""):
             updates["notes"] = new_notes
+        if new_files != task.get("files", []):
+            updates["files"] = new_files
 
         if updates:
             update_task(track_id, task["id"], updates)

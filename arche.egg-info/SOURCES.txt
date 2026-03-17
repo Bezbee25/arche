@@ -46,6 +46,7 @@ instructions/devops/terraform-best-practices.md
 instructions/general/api-design.md
 instructions/general/code-review.md
 instructions/general/test-instruction.md
+instructions/general/token-optimization.md
 instructions/secops/owasp-top10.md
 instructions/secops/pentest-checklist.md
 instructions/secops/secure-development-principles.md

@@ -35,7 +35,7 @@ const state = {
   _autoRefreshBlocked: false, // true if user is scrolling in any section
   hasPassword: false,       // whether a password is set
   sessionLocked: false,     // whether session is currently locked
-  selectedInstructionIds: new Set(), // instructions selectionnees (checkboxes)
+  selectedInstructionIds: new Set(JSON.parse(localStorage.getItem('selectedInstructionIds') || '[]')), // instructions selectionnees (checkboxes)
 };
 
 let _termCounter = 0;
@@ -86,7 +86,9 @@ const api = {
   switchTrack: (id) => apiFetch('/api/tracks/switch', { method: 'POST', body: JSON.stringify({ track_id: id }) }),
   doneTrack: (id) => apiFetch(`/api/tracks/${id}/done`, { method: 'POST' }),
   nextTask: (trackId) => apiFetch(`/api/tracks/${trackId}/tasks/next`, { method: 'POST' }),
-  addTask: (trackId, title, phaseId = '') => apiFetch(`/api/tracks/${trackId}/tasks`, { method: 'POST', body: JSON.stringify({ title, phase_id: phaseId }) }),
+  addTask: (trackId, title, phaseId = '', files = []) => apiFetch(`/api/tracks/${trackId}/tasks`, { method: 'POST', body: JSON.stringify({ title, phase_id: phaseId, files }) }),
+  getTrackFiles: (trackId) => apiFetch(`/api/tracks/${trackId}/files`),
+  setTrackFiles: (trackId, files) => apiFetch(`/api/tracks/${trackId}/files`, { method: 'PUT', body: JSON.stringify({ files }) }),
   doneTask: (trackId, taskId, notes = '') => apiFetch(`/api/tracks/${trackId}/tasks/done`, { method: 'POST', body: JSON.stringify({ task_id: taskId, notes }) }),
   blockTask: (trackId, taskId, reason) => apiFetch(`/api/tracks/${trackId}/tasks/block`, { method: 'POST', body: JSON.stringify({ task_id: taskId, reason }) }),
   selectTask: (trackId, taskId) => apiFetch(`/api/tracks/${trackId}/tasks/${taskId}/select`, { method: 'POST' }),
@@ -178,6 +180,7 @@ async function init() {
     await renderPanelFor(state.plans[0].id);
   }
   setupScrollDetection();
+  updateInstructionSelectionFeedback();
   // Setup lock screen on page load
   await setupLockScreen();
   // Listen for lock state changes from other tabs
@@ -259,6 +262,10 @@ function renderSidebar(plans) {
       // Update sidebar selection visually
       container.querySelectorAll('.plan-item').forEach(e => e.classList.remove('active'));
       el.classList.add('active');
+      // Close instructions panel if open
+      if ($id('instructions-panel').classList.contains('visible')) {
+        toggleInstructionsView(false);
+      }
       await renderPanelFor(id);
     });
   });
@@ -329,7 +336,6 @@ async function renderTabContent(plan, tab) {
     case 'sessions': renderSessions(plan); break;
     case 'output': renderOutputPane(); break;
     case 'editor': await renderEditor(); break;
-    case 'instructions': await renderInstructions(); break;
   }
 }
 
@@ -400,13 +406,24 @@ function renderTasks(plan) {
         <option value="BLOCKED" ${status === 'BLOCKED' ? 'selected' : ''}>✗ Blocked</option>
       </select>`;
 
+    const taskFiles = t.files || [];
+    const fileWarnings = t.file_warnings || [];
+    const hasWarnings = fileWarnings.length > 0;
+    const filesHtml = taskFiles.length > 0 ? `<div class="task-files">${taskFiles.map(f => {
+      const isImg = /\.(png|jpg|jpeg|gif|webp|bmp|svg)$/i.test(f);
+      return `<span class="task-file-tag">${isImg ? '🖼' : '📄'} ${escHtml(f)}</span>`;
+    }).join('')}</div>` : '';
+    const warnTitle = hasWarnings ? fileWarnings.map(w => `${w.file}: ${w.reason}`).join('\n') : '';
+    const warnBadge = hasWarnings ? `<span class="file-warn-badge" title="${escHtml(warnTitle)}">⚠</span>` : '';
+
     return `
       <div class="${rowClass}" data-task-id="${t.id}" data-plan-id="${planId}">
         <div class="task-icon ${status.toLowerCase()}">${icon}</div>
         <div class="task-body">
-          <div class="task-title ${titleClass}">${escHtml(t.title || '')}</div>
+          <div class="task-title ${titleClass}">${escHtml(t.title || '')}${warnBadge}</div>
           ${t.description ? `<div class="task-desc">${escHtml(t.description)}</div>` : ''}
           ${t.blocked_reason ? `<div class="task-desc blocked-reason">↳ ${escHtml(t.blocked_reason)}</div>` : ''}
+          ${filesHtml}
         </div>
         ${inlineType}
         ${inlineStatus}
@@ -655,12 +672,22 @@ function renderTasksWithPhases(plan, phases) {
           <option value="DONE" ${status === 'DONE' ? 'selected' : ''}>✓ Done</option>
           <option value="BLOCKED" ${status === 'BLOCKED' ? 'selected' : ''}>✗ Blocked</option>
         </select>`;
+      const tFiles = t.files || [];
+      const tWarnings = t.file_warnings || [];
+      const tHasWarnings = tWarnings.length > 0;
+      const tFilesHtml = tFiles.length > 0 ? `<div class="task-files">${tFiles.map(f => {
+        const isImg = /\.(png|jpg|jpeg|gif|webp|bmp|svg)$/i.test(f);
+        return `<span class="task-file-tag">${isImg ? '🖼' : '📄'} ${escHtml(f)}</span>`;
+      }).join('')}</div>` : '';
+      const tWarnTitle = tHasWarnings ? tWarnings.map(w => `${w.file}: ${w.reason}`).join('\n') : '';
+      const tWarnBadge = tHasWarnings ? `<span class="file-warn-badge" title="${escHtml(tWarnTitle)}">⚠</span>` : '';
       return `
         <div class="task-item${isUiSelected ? ' ui-selected' : ''}${isBulkSelected ? ' bulk-selected' : ''}${isLocked ? ' task-locked' : ''}" data-task-id="${t.id}" data-plan-id="${planId}">
           <div class="task-icon ${status.toLowerCase()}">${icon}</div>
           <div class="task-body">
-            <div class="task-title ${titleClass}">${escHtml(t.title || '')}</div>
+            <div class="task-title ${titleClass}">${escHtml(t.title || '')}${tWarnBadge}</div>
             ${t.description ? `<div class="task-desc">${escHtml(t.description)}</div>` : ''}
+            ${tFilesHtml}
           </div>
           ${inlineType}
           ${inlineStatus}
@@ -936,34 +963,38 @@ async function confirmNewPhase() {
   await renderPanelFor(planId);
 }
 
-// -- Instructions tab --------------------------------------------------------
+// -- Instructions panel --------------------------------------------------------
+function toggleInstructionsView(show) {
+  const panel = $id('panel');
+  const instrPanel = $id('instructions-panel');
+  const btn = $id('sidebar-instructions-btn');
+  if (show) {
+    panel.style.display = 'none';
+    instrPanel.classList.add('visible');
+    btn.classList.add('active');
+  } else {
+    panel.style.display = '';
+    instrPanel.classList.remove('visible');
+    btn.classList.remove('active');
+  }
+}
+
 async function renderInstructions() {
-  const pane = $id('tab-instructions');
+  const pane = $id('instructions-panel');
   pane.innerHTML = `
     <div class="instructions-layout">
       <div class="instructions-search">
         <input type="text" id="instruction-search" placeholder="Search instructions..." />
-        <select id="instruction-category">
-          <option value="">All Categories</option>
-          <option value="general">General</option>
-          <option value="languages">Languages</option>
-          <option value="frontend">Frontend</option>
-          <option value="backend">Backend</option>
-          <option value="tooling">Tooling</option>
-        </select>
-        <input type="text" id="instruction-tags" placeholder="Filter by tags..." />
+        <div class="instructions-filter-bar">
+          <button class="instr-filter-btn active" data-filter="all">Tous</button>
+          <button class="instr-filter-btn" data-filter="selected">Sélectionnés</button>
+        </div>
         <button id="btn-new-instruction" class="btn-new-instruction">+ New</button>
       </div>
       <div id="new-instruction-form" class="new-instruction-form" style="display: none;">
         <div class="new-instruction-form-row">
           <input type="text" id="new-instr-name" placeholder="Name *" class="new-instr-field" />
-          <select id="new-instr-category" class="new-instr-field">
-            <option value="general">General</option>
-            <option value="languages">Languages</option>
-            <option value="frontend">Frontend</option>
-            <option value="backend">Backend</option>
-            <option value="tooling">Tooling</option>
-          </select>
+          <input type="text" id="new-instr-category" placeholder="Category" class="new-instr-field" />
           <input type="text" id="new-instr-tags" placeholder="Tags (comma-separated)" class="new-instr-field" />
         </div>
         <input type="text" id="new-instr-description" placeholder="Description" class="new-instr-field new-instr-full" />
@@ -980,10 +1011,17 @@ async function renderInstructions() {
   // Load and display instructions
   await loadInstructions();
 
-  // Set up event listeners
+  // Search
   $id('instruction-search').addEventListener('input', debounce(loadInstructions, 300));
-  $id('instruction-category').addEventListener('change', loadInstructions);
-  $id('instruction-tags').addEventListener('input', debounce(loadInstructions, 300));
+
+  // Filter buttons
+  pane.querySelectorAll('.instr-filter-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      pane.querySelectorAll('.instr-filter-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      loadInstructions();
+    });
+  });
 
   // New instruction form toggle
   $id('btn-new-instruction').addEventListener('click', () => {
@@ -1011,7 +1049,7 @@ async function renderInstructions() {
       id: name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, ''),
       name,
       description: $id('new-instr-description').value.trim(),
-      category: $id('new-instr-category').value,
+      category: $id('new-instr-category').value.trim() || 'user',
       tags,
       content,
       source: 'user',
@@ -1035,38 +1073,40 @@ function clearNewInstructionForm() {
   $id('new-instr-description').value = '';
   $id('new-instr-tags').value = '';
   $id('new-instr-content').value = '';
-  $id('new-instr-category').value = 'general';
+  $id('new-instr-category').value = '';
 }
 
 async function loadInstructions() {
-  const searchQuery = $id('instruction-search').value;
-  const category = $id('instruction-category').value;
-  const tags = $id('instruction-tags').value;
-  
+  const searchQuery = $id('instruction-search')?.value || '';
+  const activeFilter = document.querySelector('.instr-filter-btn.active')?.dataset.filter || 'all';
+
   const listContainer = $id('instruction-list');
   listContainer.innerHTML = '';
-  
+
   // Show loading skeleton
   for (let i = 0; i < 5; i++) {
     const skeleton = document.createElement('div');
     skeleton.className = 'instruction-skeleton';
     listContainer.appendChild(skeleton);
   }
-  
+
   try {
     const params = {};
     if (searchQuery) params.q = searchQuery;
-    if (category) params.category = category;
-    if (tags) params.tags = tags;
-    
+
     const response = await api.searchInstructions(params);
     if (!response) {
       throw new Error('Failed to fetch instructions from server');
     }
-    const instructions = response.instructions || [];
-    
+    let instructions = response.instructions || [];
+
+    // Client-side filter: selected only
+    if (activeFilter === 'selected') {
+      instructions = instructions.filter(i => state.selectedInstructionIds.has(i.id));
+    }
+
     listContainer.innerHTML = '';
-    
+
     if (instructions.length === 0) {
       listContainer.innerHTML = `
         <div class="instructions-empty-state">
@@ -1125,6 +1165,7 @@ async function loadInstructions() {
         } else {
           state.selectedInstructionIds.delete(instructionId);
         }
+        localStorage.setItem('selectedInstructionIds', JSON.stringify(Array.from(state.selectedInstructionIds)));
         updateInstructionSelectionFeedback();
       });
     });
@@ -1256,9 +1297,9 @@ async function loadInstructions() {
 
 function updateInstructionSelectionFeedback() {
   const count = state.selectedInstructionIds.size;
-  const tab = document.querySelector('.tab[data-tab="instructions"]');
-  if (!tab) return;
-  tab.textContent = count > 0 ? `Instructions (${count})` : 'Instructions';
+  const btn = $id('sidebar-instructions-btn');
+  if (!btn) return;
+  btn.textContent = count > 0 ? `Instructions (${count})` : 'Instructions';
 }
 
 // -- Editor tab -------------------------------------------------------------
@@ -1622,18 +1663,47 @@ async function renderSpec(planId) {
   const el = $id('plan-header-actions'); if (el) el.innerHTML = '';
   const pane = $id('tab-spec');
   pane.innerHTML = '<div class="empty-state">Loading...</div>';
-  const data = await api.getTrackSpec(planId);
+  const [data, filesData] = await Promise.all([
+    api.getTrackSpec(planId),
+    api.getTrackFiles(planId),
+  ]);
   if (!data || !data.content) {
     pane.innerHTML = '<div class="empty-state">No spec yet. Run <code>arche spec</code>.</div>';
     return;
   }
+  const trackFiles = (filesData && filesData.files) ? filesData.files : [];
+  const filesListHtml = trackFiles.length > 0
+    ? trackFiles.map(f => {
+        const isImg = /\.(png|jpg|jpeg|gif|webp|bmp|svg)$/i.test(f);
+        return `<span class="task-file-tag">${isImg ? '🖼' : '📄'} ${escHtml(f)}</span>`;
+      }).join('')
+    : '<span style="color:var(--text-dim);font-size:12px">Aucun fichier de référence.</span>';
+
   pane.innerHTML = `
     <div class="spec-toolbar">
       <button class="btn-primary btn-sm" onclick="refineSpec('${planId}')">✦ Refine spec</button>
       <button class="btn-ghost btn-sm" onclick="generatePhases('${planId}')">⚡ Generate phases</button>
       <button class="btn-ghost btn-sm" onclick="generateTasks('${planId}')">⚡ Generate tasks</button>
     </div>
-    <pre class="spec-content">${escHtml(data.content)}</pre>`;
+    <pre class="spec-content">${escHtml(data.content)}</pre>
+    <div class="track-files-section">
+      <div class="track-files-header">
+        <span>📎 Fichiers de référence du track</span>
+        <button class="btn-ghost btn-sm" onclick="openTrackFilesModal('${planId}')">Modifier</button>
+      </div>
+      <div class="track-files-list">${filesListHtml}</div>
+    </div>`;
+}
+
+async function openTrackFilesModal(planId) {
+  const data = await api.getTrackFiles(planId);
+  const files = (data && data.files) ? data.files : [];
+  const newVal = prompt('Fichiers de référence du track (un chemin par ligne) :', files.join('\n'));
+  if (newVal === null) return; // cancelled
+  const newFiles = newVal.split('\n').map(l => l.trim()).filter(Boolean);
+  await api.setTrackFiles(planId, newFiles);
+  showToast('✓ Fichiers du track mis à jour');
+  await renderSpec(planId);
 }
 
 // -- Sessions tab -----------------------------------------------------------
@@ -2132,6 +2202,7 @@ function openEditTask(planId, taskId) {
   $id('edit-task-title').value = task.title || '';
   $id('edit-task-desc').value = task.description || '';
   $id('edit-task-notes').value = task.notes || '';
+  $id('edit-task-files').value = (task.files || []).join('\n');
   $id('modal-edit-overlay').classList.remove('hidden');
   $id('edit-task-title').focus();
 }
@@ -2144,10 +2215,13 @@ function closeEditModal() {
 async function saveEditTask() {
   if (!state.editingTask) return;
   const { planId, task } = state.editingTask;
+  const filesRaw = $id('edit-task-files').value.trim();
+  const files = filesRaw ? filesRaw.split('\n').map(l => l.trim()).filter(Boolean) : [];
   const updates = {
     title: $id('edit-task-title').value.trim(),
     description: $id('edit-task-desc').value.trim(),
     notes: $id('edit-task-notes').value.trim(),
+    files,
   };
   closeEditModal();
   await api.updateTask(planId, task.id, updates);
@@ -2495,6 +2569,18 @@ function setupEventListeners() {
     const collapsed = sidebar.classList.toggle('collapsed');
     sidebarToggle.classList.toggle('collapsed', collapsed);
     localStorage.setItem('sidebar-collapsed', collapsed);
+  });
+
+  // Instructions sidebar button
+  $id('sidebar-instructions-btn').addEventListener('click', async () => {
+    const instrPanel = $id('instructions-panel');
+    const isShowing = instrPanel.classList.contains('visible');
+    if (isShowing) {
+      toggleInstructionsView(false);
+    } else {
+      toggleInstructionsView(true);
+      await renderInstructions();
+    }
   });
 
   // New plan button
@@ -2980,6 +3066,7 @@ async function createReworkTask() {
 function openAddTaskModal(trackId) {
   state.addTaskTrackId = trackId;
   $id('add-task-title').value = '';
+  $id('add-task-files').value = '';
 
   // Populate phase selector if the current plan has phases
   const plan = (state._lastPlan && state._lastPlan.id === trackId) ? state._lastPlan : null;
@@ -3008,8 +3095,10 @@ async function confirmAddTask() {
   const trackId = state.addTaskTrackId;
   const phaseRow = $id('add-task-phase-row');
   const phaseId = !phaseRow.classList.contains('hidden') ? $id('add-task-phase').value : '';
+  const filesRaw = $id('add-task-files').value.trim();
+  const files = filesRaw ? filesRaw.split('\n').map(l => l.trim()).filter(Boolean) : [];
   closeAddTaskModal();
-  const task = await api.addTask(trackId, title, phaseId);
+  const task = await api.addTask(trackId, title, phaseId, files);
   if (task && task.id) {
     showToast(`✓ Task added: ${task.title}`);
   }
@@ -3597,6 +3686,7 @@ window.confirmRunTask = confirmRunTask;
 window.openAddTaskModal = openAddTaskModal;
 window.closeAddTaskModal = closeAddTaskModal;
 window.confirmAddTask = confirmAddTask;
+window.openTrackFilesModal = openTrackFilesModal;
 window.toggleLockSession = toggleLockSession;
 window.closeLockSetupModal = closeLockSetupModal;
 window.closeLockScreenModal = closeLockScreenModal;

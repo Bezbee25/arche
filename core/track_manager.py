@@ -268,6 +268,20 @@ def save_spec(track_id: str, content: str) -> None:
     _spec_path(track_id).write_text(content)
 
 
+def get_track_files(track_id: str) -> list:
+    """Return the list of track-level attached files from meta.yaml."""
+    meta = load_yaml(_meta_path(track_id))
+    return meta.get("files", [])
+
+
+def set_track_files(track_id: str, files: list) -> None:
+    """Set the list of track-level attached files in meta.yaml."""
+    meta = load_yaml(_meta_path(track_id))
+    meta["files"] = files
+    meta["updated_at"] = datetime.now().isoformat()
+    save_yaml(_meta_path(track_id), meta)
+
+
 # ── Phase management ─────────────────────────────────────────────────────────
 
 _DEFAULT_PHASE_ID = "default"

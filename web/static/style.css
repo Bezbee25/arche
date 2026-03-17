@@ -304,6 +304,24 @@ body {
 #sidebar.collapsed + #sidebar-toggle { border-left: 1px solid var(--border); }
 #sidebar-toggle.collapsed { transform: scaleX(-1); }
 
+.sidebar-nav-item {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  color: var(--text-dim);
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: color 0.1s;
+}
+.sidebar-nav-item:hover { color: var(--text); }
+.sidebar-nav-item.active { color: var(--cyan); }
+
+.sidebar-sep {
+  height: 1px;
+  background: var(--border);
+  margin: 2px 12px 8px;
+}
+
 .sidebar-label {
   font-size: 11px;
   font-weight: 700;
@@ -713,6 +731,30 @@ body {
   margin-top: 2px;
 }
 
+.task-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.task-file-tag {
+  font-size: 11px;
+  color: var(--text-dim);
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 5px;
+}
+
+.file-warn-badge {
+  display: inline-block;
+  margin-left: 5px;
+  font-size: 12px;
+  color: #f0a30a;
+  cursor: help;
+}
+
 .task-badge {
   flex-shrink: 0;
   font-size: 10px;
@@ -809,11 +851,15 @@ body {
 .editor-pane .empty-state { padding: 16px; }
 
 /* ── Instructions ──────────────────────────────────── */
-#tab-instructions.active {
-  padding: 0;
-  overflow: hidden;
-  display: flex;
+#instructions-panel {
+  flex: 1;
+  display: none;
   flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+}
+#instructions-panel.visible {
+  display: flex;
 }
 
 .instructions-layout {
@@ -845,6 +891,27 @@ body {
   outline: none;
   border-color: var(--cyan);
 }
+
+.instructions-filter-bar {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.instr-filter-btn {
+  padding: 6px 12px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.1s, border-color 0.1s;
+}
+.instr-filter-btn:hover { color: var(--text); }
+.instr-filter-btn.active { border-color: var(--cyan); color: var(--cyan); }
 
 .instructions-search select {
   padding: 8px 12px;
@@ -1399,6 +1466,30 @@ body {
 .spec-content h1, .spec-content h2, .spec-content h3 {
   color: var(--text);
   margin: 1em 0 0.4em;
+}
+
+/* ── Track files section ────────────────────────────── */
+.track-files-section {
+  margin: 16px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg2);
+}
+
+.track-files-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.track-files-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 /* ── Sessions ───────────────────────────────────────── */

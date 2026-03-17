@@ -37,6 +37,8 @@ from core.track_manager import (
     get_phase,
     update_phase,
     delete_phase,
+    get_track_files,
+    set_track_files,
     _DEFAULT_PHASE_ID,
     STORAGE_DIR,
 )
@@ -75,6 +77,7 @@ class NewTaskRequest(BaseModel):
     title: str
     description: str = ""
     phase_id: str = ""
+    files: list[str] = []
 
 class CompleteTaskRequest(BaseModel):
     task_id: Optional[str] = None
@@ -90,6 +93,7 @@ class UpdateTaskRequest(BaseModel):
     notes: Optional[str] = None
     status: Optional[str] = None
     type: Optional[str] = None
+    files: Optional[list[str]] = None
 
 class NewPhaseRequest(BaseModel):
     name: str
@@ -120,6 +124,9 @@ class TemplateGenerationRequest(BaseModel):
 
 class PasswordRequest(BaseModel):
     password: str
+
+class TrackFilesRequest(BaseModel):
+    files: list[str] = []
 
 class WriteFileRequest(BaseModel):
     path: str
@@ -404,7 +411,8 @@ def create_app() -> FastAPI:
         result = []
         for p in plans:
             stats = get_task_stats(p["id"])
-            result.append({**p, "stats": stats})
+            files = get_track_files(p["id"])
+            result.append({**p, "stats": stats, "files": files})
         return result
 
     @app.get("/api/tracks/active")
@@ -425,7 +433,8 @@ def create_app() -> FastAPI:
         tasks = load_tasks(track_id)
         sessions = list_sessions(track_id)
         phases = _build_phases_detail(track_id)
-        return {**plan, "stats": stats, "tasks": tasks, "sessions": sessions, "phases": phases}
+        files = get_track_files(track_id)
+        return {**plan, "stats": stats, "tasks": tasks, "sessions": sessions, "phases": phases, "files": files}
 
     @app.get("/api/tracks/{track_id}/spec")
     def get_plan_spec(track_id: str):
@@ -655,6 +664,16 @@ def create_app() -> FastAPI:
         update_track_phase(track_id, "plan")
         return {"ok": True}
 
+    @app.get("/api/tracks/{track_id}/files")
+    def get_track_files_endpoint(track_id: str):
+        files = get_track_files(track_id)
+        return {"files": files}
+
+    @app.put("/api/tracks/{track_id}/files")
+    def set_track_files_endpoint(track_id: str, req: TrackFilesRequest):
+        set_track_files(track_id, req.files)
+        return {"files": req.files}
+
     @app.get("/api/tracks/{track_id}/spec/refine")
     async def stream_spec_refine(track_id: str):
         """Rewrite the plan spec with LLM then save it (SSE)."""
@@ -872,11 +891,38 @@ def create_app() -> FastAPI:
 
     @app.get("/api/tracks/{track_id}/tasks")
     def get_plan_tasks(track_id: str):
-        return load_tasks(track_id)
+        from core.router import get_model_for_phase, _resolve_model_spec
+        from core.context import _is_image_file
+        tasks = load_tasks(track_id)
+        plan = get_track(track_id)
+        if not plan:
+            return tasks
+        # Resolve dev-phase tool to compute file_warnings
+        try:
+            spec = get_model_for_phase("dev", plan)
+            resolved = _resolve_model_spec(spec, plan)
+            supports_images = resolved.get("file_support", {}).get("images", False)
+            tool_binary = resolved.get("binary", "")
+        except Exception:
+            supports_images = True
+            tool_binary = ""
+        result = []
+        for task in tasks:
+            task_copy = dict(task)
+            warnings = []
+            for f in task.get("files", []):
+                if _is_image_file(f) and not supports_images:
+                    warnings.append({
+                        "file": f,
+                        "reason": f"L'outil '{tool_binary}' ne supporte pas les fichiers images.",
+                    })
+            task_copy["file_warnings"] = warnings
+            result.append(task_copy)
+        return result
 
     @app.post("/api/tracks/{track_id}/tasks")
     def create_task(track_id: str, req: NewTaskRequest):
-        task = add_task(track_id, req.title, req.description, phase_id=req.phase_id)
+        task = add_task(track_id, req.title, req.description, phase_id=req.phase_id, files=req.files)
         return task
 
     @app.delete("/api/tracks/{track_id}/tasks/{task_id}")
@@ -938,9 +984,11 @@ def create_app() -> FastAPI:
         """Switch to task then stream LLM output via SSE."""
         # Parse selected instruction IDs from comma-separated string
         selected_instruction_ids = [i.strip() for i in instructions.split(",") if i.strip()] if instructions else []
-        from core.context import build_task_prompt, extract_archi_notes, append_archi
+        from core.context import build_task_prompt, extract_archi_notes, append_archi, split_files_by_type
         from core.router import (
             _build_command,
+            _build_cmd_from_resolved,
+            _resolve_model_spec,
             _get_cli_for_model,
             get_model_for_phase,
             get_tools_for_phase,
@@ -952,6 +1000,13 @@ def create_app() -> FastAPI:
 
         switch_task(track_id, task_id)
         start_task(track_id)
+
+        # Collect attached files (track-level + task-level)
+        task_obj = get_current_task(track_id)
+        _track_files = get_track_files(track_id)
+        _task_files = (task_obj or {}).get("files", [])
+        _all_files = list(dict.fromkeys(_track_files + _task_files))
+        _text_files, _image_files = split_files_by_type(_all_files)
 
         phase = plan.get("phase", "dev")
         model = get_model_for_phase(phase, plan)
@@ -965,10 +1020,12 @@ def create_app() -> FastAPI:
                 raise HTTPException(status_code=500, detail=f"CLI '{cli}' not found")
 
         tools = get_tools_for_phase(phase, plan)
-        cmd = _build_command(cli, model, None, tools)
+        # Build command with image files support
+        _resolved = _resolve_model_spec(model, plan)
+        cmd = _build_cmd_from_resolved(_resolved, None, tools, image_files=_image_files or None)
         if cli == "claude":
             cmd += ["--output-format", "stream-json", "--verbose"]
-        prompt = build_task_prompt(track_id, plan, comment=comment, selected_instruction_ids=selected_instruction_ids)
+        prompt = build_task_prompt(track_id, plan, comment=comment, selected_instruction_ids=selected_instruction_ids, attached_files=_text_files)
 
         if selected_instruction_ids:
             from core.session_logger import log_instructions_used
@@ -1094,9 +1151,10 @@ def create_app() -> FastAPI:
         """
         # Parse selected instruction IDs from comma-separated string
         selected_instruction_ids = [i.strip() for i in instructions.split(",") if i.strip()] if instructions else []
-        from core.context import build_task_prompt
+        from core.context import build_task_prompt, split_files_by_type
         from core.router import (
-            _build_command,
+            _build_cmd_from_resolved,
+            _resolve_model_spec,
             _get_cli_for_model,
             get_model_for_phase,
             get_tools_for_phase,
@@ -1115,6 +1173,12 @@ def create_app() -> FastAPI:
         model = get_model_for_phase(phase, plan)
         cli = _get_cli_for_model(model)
 
+        # Collect attached files (track-level + task-level)
+        _track_files = get_track_files(track_id)
+        _task_files = task_obj.get("files", [])
+        _all_files = list(dict.fromkeys(_track_files + _task_files))
+        _text_files, _image_files = split_files_by_type(_all_files)
+
         if not shutil.which(cli):
             if cli != "claude" and shutil.which("claude"):
                 cli = "claude"
@@ -1123,8 +1187,9 @@ def create_app() -> FastAPI:
                 raise HTTPException(status_code=500, detail=f"CLI '{cli}' not found")
 
         tools = get_tools_for_phase(phase, plan)
-        cmd = _build_command(cli, model, None, tools)
-        prompt = build_task_prompt(track_id, plan, comment=comment, selected_instruction_ids=selected_instruction_ids)
+        _resolved = _resolve_model_spec(model, plan)
+        cmd = _build_cmd_from_resolved(_resolved, None, tools, image_files=_image_files or None)
+        prompt = build_task_prompt(track_id, plan, comment=comment, selected_instruction_ids=selected_instruction_ids, attached_files=_text_files)
 
         if selected_instruction_ids:
             from core.session_logger import log_instructions_used
@@ -1194,9 +1259,10 @@ def create_app() -> FastAPI:
     @app.post("/api/tracks/{track_id}/tasks/bulk-run")
     async def bulk_run_tasks(track_id: str, req: BulkTaskRunRequest):
         """Execute multiple tasks in sequence via streaming (one per task)."""
-        from core.context import build_task_prompt, extract_archi_notes, append_archi
+        from core.context import build_task_prompt, extract_archi_notes, append_archi, split_files_by_type
         from core.router import (
-            _build_command,
+            _build_cmd_from_resolved,
+            _resolve_model_spec,
             _get_cli_for_model,
             get_model_for_phase,
             get_tools_for_phase,
@@ -1235,9 +1301,7 @@ def create_app() -> FastAPI:
                 raise HTTPException(status_code=500, detail=f"CLI '{cli}' not found")
 
         tools = get_tools_for_phase(phase, plan)
-        cmd_base = _build_command(cli, model, None, tools)
-        if cli == "claude":
-            cmd_base += ["--output-format", "stream-json", "--verbose"]
+        _track_files_bulk = get_track_files(track_id)
 
         async def generate_bulk():
             # Initialize the active runs list for this track
@@ -1265,7 +1329,15 @@ def create_app() -> FastAPI:
                     task = task_map[task_id]
                     # Parse selected instruction IDs from comma-separated string
                     selected_instruction_ids = [i.strip() for i in req.instructions.split(",") if i.strip()] if req.instructions else []
-                    prompt = build_task_prompt(track_id, plan, comment=req.comment, selected_instruction_ids=selected_instruction_ids)
+                    # Per-task files
+                    _task_files_bulk = task.get("files", [])
+                    _all_files_bulk = list(dict.fromkeys(_track_files_bulk + _task_files_bulk))
+                    _text_files_bulk, _image_files_bulk = split_files_by_type(_all_files_bulk)
+                    _resolved_bulk = _resolve_model_spec(model, plan)
+                    cmd_base = _build_cmd_from_resolved(_resolved_bulk, None, tools, image_files=_image_files_bulk or None)
+                    if cli == "claude":
+                        cmd_base += ["--output-format", "stream-json", "--verbose"]
+                    prompt = build_task_prompt(track_id, plan, comment=req.comment, selected_instruction_ids=selected_instruction_ids, attached_files=_text_files_bulk)
 
                     if selected_instruction_ids:
                         from core.session_logger import log_instructions_used
