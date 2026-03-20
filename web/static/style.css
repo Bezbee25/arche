@@ -1747,6 +1747,9 @@ body {
 
 .btn-primary:hover { background: #4dd9e4; }
 
+button:disabled { opacity: 0.35; cursor: not-allowed; }
+button:not(:disabled):hover { opacity: 1; }
+
 .btn-blue {
   background: var(--blue);
   border: none;

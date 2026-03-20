@@ -37,6 +37,8 @@ const state = {
   sessionLocked: false,     // whether session is currently locked
   selectedInstructionIds: new Set(JSON.parse(localStorage.getItem('selectedInstructionIds') || '[]')), // instructions selectionnees (checkboxes)
   projectAgentsByPhase: {}, // agents par phase LLM (chargé depuis project.agents)
+  specTaskCount: 0, // nombre de taches dans le track actif (chargé au render spec)
+  specPhaseCount: 0, // nombre de phases dans le track actif (chargé au render spec)
 };
 
 let _termCounter = 0;
@@ -88,6 +90,7 @@ const api = {
   doneTrack: (id) => apiFetch(`/api/tracks/${id}/done`, { method: 'POST' }),
   nextTask: (trackId) => apiFetch(`/api/tracks/${trackId}/tasks/next`, { method: 'POST' }),
   addTask: (trackId, title, phaseId = '', files = []) => apiFetch(`/api/tracks/${trackId}/tasks`, { method: 'POST', body: JSON.stringify({ title, phase_id: phaseId, files }) }),
+  getTasks: (trackId) => apiFetch(`/api/tracks/${trackId}/tasks`),
   getTrackFiles: (trackId) => apiFetch(`/api/tracks/${trackId}/files`),
   setTrackFiles: (trackId, files) => apiFetch(`/api/tracks/${trackId}/files`, { method: 'PUT', body: JSON.stringify({ files }) }),
   doneTask: (trackId, taskId, notes = '') => apiFetch(`/api/tracks/${trackId}/tasks/done`, { method: 'POST', body: JSON.stringify({ task_id: taskId, notes }) }),
@@ -1863,14 +1866,24 @@ async function renderSpec(planId) {
   const el = $id('plan-header-actions'); if (el) el.innerHTML = '';
   const pane = $id('tab-spec');
   pane.innerHTML = '<div class="empty-state">Loading...</div>';
-  const [data, filesData] = await Promise.all([
+  const [data, filesData, tasksData, phasesData] = await Promise.all([
     api.getTrackSpec(planId),
     api.getTrackFiles(planId),
+    api.getTasks(planId),
+    api.getPhases(planId),
   ]);
   if (!data || !data.content) {
     pane.innerHTML = '<div class="empty-state">No spec yet. Run <code>arche spec</code>.</div>';
     return;
   }
+  const taskCount = (tasksData && Array.isArray(tasksData)) ? tasksData.length : 0;
+  const phaseCount = (phasesData && Array.isArray(phasesData)) ? phasesData.length : 0;
+  const namedPhaseCount = (phasesData && Array.isArray(phasesData))
+    ? phasesData.filter(p => p && p.name && p.name.trim() !== '').length
+    : 0;
+  state.specTaskCount = taskCount;
+  state.specPhaseCount = phaseCount;
+
   const trackFiles = (filesData && filesData.files) ? filesData.files : [];
   const filesListHtml = trackFiles.length > 0
     ? trackFiles.map(f => {
@@ -1879,11 +1892,15 @@ async function renderSpec(planId) {
       }).join('')
     : '<span style="color:var(--text-dim);font-size:12px">Aucun fichier de référence.</span>';
 
+  const hasContent = taskCount > 0 || namedPhaseCount > 0;
+  const phasesDisabled = hasContent ? 'disabled' : '';
+  const tasksDisabled = hasContent ? 'disabled' : '';
+
   pane.innerHTML = `
     <div class="spec-toolbar">
       <button class="btn-primary btn-sm" onclick="refineSpec('${planId}')">✦ Refine spec</button>
-      <button class="btn-ghost btn-sm" onclick="generatePhases('${planId}')">⚡ Generate phases</button>
-      <button class="btn-ghost btn-sm" onclick="generateTasks('${planId}')">⚡ Generate tasks</button>
+      <button class="btn-ghost btn-sm" data-phase-count="${phaseCount}" onclick="generatePhases('${planId}')" ${phasesDisabled}>⚡ Generate phases</button>
+      <button class="btn-ghost btn-sm" data-task-count="${taskCount}" onclick="generateTasks('${planId}')" ${tasksDisabled}>⚡ Generate tasks</button>
     </div>
     <pre class="spec-content">${escHtml(data.content)}</pre>
     <div class="track-files-section">
