@@ -2348,6 +2348,114 @@ button:not(:disabled):hover { opacity: 1; }
   cursor: pointer;
 }
 
+.jira-settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 12px;
+}
+
+.jira-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.jira-field-label {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg2);
+}
+
+.jira-field input {
+  padding: 8px 12px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--fg1);
+  font-size: 13px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.jira-field input:focus {
+  outline: none;
+  border-color: var(--cyan);
+}
+
+.jira-api-key-row {
+  display: flex;
+  gap: 8px;
+}
+
+.jira-api-key-row input {
+  flex: 1;
+}
+
+.jira-test-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.jira-status {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.jira-status.ok {
+  color: var(--green, #4caf50);
+}
+
+.jira-status.err {
+  color: var(--red, #f44336);
+}
+
+.jira-status.loading {
+  color: var(--muted, #888);
+}
+
+.jira-progress-item {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 3px 0;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.jira-progress-icon {
+  font-family: monospace;
+  width: 14px;
+  flex-shrink: 0;
+  color: var(--muted, #888);
+}
+
+.jira-progress-item.done .jira-progress-icon {
+  color: var(--green, #4caf50);
+}
+
+.jira-progress-item.err .jira-progress-icon {
+  color: var(--red, #f44336);
+}
+
+.jira-progress-key {
+  color: var(--cyan, #80cbc4);
+  font-family: monospace;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.jira-progress-summary {
+  color: var(--fg, #ccc);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .modal-lock-screen {
   width: 400px;
 }

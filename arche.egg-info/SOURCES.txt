@@ -19,6 +19,8 @@ core/__init__.py
 core/agent_manager.py
 core/context.py
 core/instruction_store.py
+core/jira_client.py
+core/jira_refiner.py
 core/model_registry.py
 core/plan_manager.py
 core/router.py

@@ -94,6 +94,21 @@ def save_project(data: dict) -> None:
         pass
 
 
+_JIRA_DEFAULTS: dict = {"url": "", "login": "", "api_key": ""}
+
+
+def load_jira_settings() -> dict:
+    project = load_project()
+    stored = project.get("jira", {}) or {}
+    return {**_JIRA_DEFAULTS, **stored}
+
+
+def save_jira_settings(url: str, login: str, api_key: str) -> None:
+    project = load_project()
+    project["jira"] = {"url": url.strip(), "login": login.strip(), "api_key": api_key.strip()}
+    save_yaml(PROJECT_FILE, project)
+
+
 def get_current_track_id() -> Optional[str]:
     data = load_yaml(CURRENT_FILE)
     return data.get("active_track_id")

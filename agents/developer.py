@@ -23,14 +23,12 @@ def run(track_id: str, track_meta: dict, instruction: str) -> str:
     all_files = list(dict.fromkeys(track_files + task_files))
     text_files, image_files = split_files_by_type(all_files)
 
-    # Base : contexte complet du plan
     base_prompt = build_task_prompt(track_id, track_meta, attached_files=text_files)
 
-    # Ajouter l'instruction spécifique par-dessus
     prompt = (
         f"{base_prompt}\n\n"
         f"---\n"
-        f"**Instruction supplémentaire :** {instruction}"
+        f"**Additional instruction:** {instruction}"
     )
 
     console.print(f"\n[bold cyan]Developer[/bold cyan] — phase: {track_meta.get('phase', 'dev')}\n")
@@ -38,10 +36,9 @@ def run(track_id: str, track_meta: dict, instruction: str) -> str:
 
     result = call_llm(prompt, phase="dev", track_meta=track_meta, stream=True, image_files=image_files or None)
 
-    # Sauvegarder les notes d'architecture si présentes
     archi_notes = extract_archi_notes(result)
     if archi_notes:
         append_archi(track_id, archi_notes)
-        console.print(f"\n[green]✓ Notes d'architecture mises à jour.[/green]")
+        console.print(f"\n[green]✓ Architecture notes updated.[/green]")
 
     return result

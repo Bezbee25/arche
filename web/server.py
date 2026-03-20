@@ -147,6 +147,24 @@ class UpdateAgentRequest(BaseModel):
     system_prompt: Optional[str] = None
     model: Optional[str] = None
 
+class SaveJiraSettingsRequest(BaseModel):
+    url: str = ""
+    login: str = ""
+    api_key: str = ""
+
+
+class ImportEpicRequest(BaseModel):
+    epic_key: str
+
+
+class ValidateJqlRequest(BaseModel):
+    jql: str
+
+
+class ImportJqlRequest(BaseModel):
+    jql: str
+    track_name: str
+
 
 def _parse_claude_json_line(raw: str) -> str:
     """Parse one JSONL line from `claude --output-format stream-json`, return display text."""
@@ -2043,6 +2061,273 @@ def create_app() -> FastAPI:
         if not ok:
             raise HTTPException(status_code=404, detail="Agent not found")
         return {"ok": True, "deleted": agent_id}
+
+    @app.get("/api/settings/jira")
+    def get_jira_settings():
+        from core.track_manager import load_jira_settings as _load_jira
+        settings = _load_jira()
+        return settings
+
+    @app.patch("/api/settings/jira")
+    def patch_jira_settings(req: SaveJiraSettingsRequest):
+        from core.track_manager import save_jira_settings as _save_jira
+        _save_jira(url=req.url, login=req.login, api_key=req.api_key)
+        from core.track_manager import load_jira_settings as _load_jira
+        return _load_jira()
+
+    @app.post("/api/settings/jira/validate")
+    def validate_jira_connection(req: SaveJiraSettingsRequest):
+        from core.jira_client import validate_connection as _validate
+        result = _validate(url=req.url, login=req.login, api_key=req.api_key)
+        return result
+
+    @app.post("/api/jira/validate-jql")
+    def validate_jira_jql(req: ValidateJqlRequest):
+        from core.jira_client import JiraClient
+        try:
+            client = JiraClient.from_settings()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Jira not configured: {exc}")
+        result = client.validate_jql(req.jql)
+        if not result["ok"]:
+            raise HTTPException(status_code=400, detail=result["error"])
+        return result
+
+    @app.post("/api/jira/import-epic")
+    @app.post("/api/plans/from-jira-epic")
+    def fetch_jira_epic(req: ImportEpicRequest):
+        from core.jira_client import JiraClient
+        from core.jira_refiner import refine_epic_spec, refine_task_description
+        from core.track_manager import new_track as _new_track, TRACKS_DIR
+        from core.task_engine import add_tasks_bulk as _add_tasks_bulk
+        try:
+            client = JiraClient.from_settings()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Jira not configured: {exc}")
+        epic_key = req.epic_key.strip().upper()
+        if not epic_key:
+            raise HTTPException(status_code=422, detail="epic_key is required")
+        try:
+            epic = client.get_epic(epic_key)
+            children = client.get_child_issues(epic_key)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+        refined_spec = refine_epic_spec(epic["summary"], epic["description"])
+
+        meta = _new_track(name=epic["summary"], track_type="feature")
+        track_id = meta["id"]
+
+        spec_path = TRACKS_DIR / track_id / "spec.md"
+        spec_path.write_text(refined_spec, encoding="utf-8")
+
+        task_list = [
+            {
+                "title": child["summary"],
+                "description": refine_task_description(
+                    child["summary"],
+                    child.get("description") or "",
+                ),
+            }
+            for child in children
+        ]
+        if task_list:
+            _add_tasks_bulk(track_id, task_list)
+
+        return {"plan_id": track_id}
+
+    @app.get("/api/jira/import-epic/stream")
+    async def stream_jira_import(epic_key: str = ""):
+        import json as _json
+
+        async def generate():
+            from core.jira_client import JiraClient
+            from core.jira_refiner import refine_epic_spec, refine_task_description
+            from core.track_manager import new_track as _new_track, TRACKS_DIR
+            from core.task_engine import add_tasks_bulk as _add_tasks_bulk
+
+            key = epic_key.strip().upper()
+            if not key:
+                yield f"data: {_json.dumps({'event': 'error', 'detail': 'epic_key is required'})}\n\n"
+                yield "data: __DONE__\n\n"
+                return
+
+            try:
+                client = await asyncio.to_thread(JiraClient.from_settings)
+            except Exception as exc:
+                yield f"data: {_json.dumps({'event': 'error', 'detail': f'Jira not configured: {exc}'})}\n\n"
+                yield "data: __DONE__\n\n"
+                return
+
+            try:
+                epic = await asyncio.to_thread(client.get_epic, key)
+                children = await asyncio.to_thread(client.get_child_issues, key)
+            except RuntimeError as exc:
+                yield f"data: {_json.dumps({'event': 'error', 'detail': str(exc)})}\n\n"
+                yield "data: __DONE__\n\n"
+                return
+
+            yield f"data: {_json.dumps({'event': 'start', 'epic_key': key, 'summary': epic['summary'], 'total': len(children)})}\n\n"
+
+            try:
+                refined_spec = await asyncio.to_thread(
+                    refine_epic_spec, epic["summary"], epic["description"]
+                )
+                meta = await asyncio.to_thread(
+                    _new_track, epic["summary"], track_type="feature"
+                )
+                track_id = meta["id"]
+                spec_path = TRACKS_DIR / track_id / "spec.md"
+                spec_path.write_text(refined_spec, encoding="utf-8")
+            except Exception as exc:
+                yield f"data: {_json.dumps({'event': 'error', 'detail': f'Failed to create track: {exc}'})}\n\n"
+                yield "data: __DONE__\n\n"
+                return
+
+            yield f"data: {_json.dumps({'event': 'spec_done', 'plan_id': track_id})}\n\n"
+
+            task_list = []
+            for index, child in enumerate(children):
+                yield f"data: {_json.dumps({'event': 'child_start', 'index': index, 'total': len(children), 'key': child['key'], 'summary': child['summary']})}\n\n"
+                try:
+                    description = await asyncio.to_thread(
+                        refine_task_description,
+                        child["summary"],
+                        child.get("description") or "",
+                    )
+                    task_list.append({"title": child["summary"], "description": description})
+                    yield f"data: {_json.dumps({'event': 'child_done', 'index': index, 'key': child['key']})}\n\n"
+                except Exception as exc:
+                    task_list.append({
+                        "title": child["summary"],
+                        "description": child.get("description") or child["summary"],
+                    })
+                    yield f"data: {_json.dumps({'event': 'child_error', 'index': index, 'key': child['key'], 'detail': str(exc)})}\n\n"
+
+            if task_list:
+                await asyncio.to_thread(_add_tasks_bulk, track_id, task_list)
+
+            yield f"data: {_json.dumps({'event': 'complete', 'plan_id': track_id})}\n\n"
+            yield "data: __DONE__\n\n"
+
+        return StreamingResponse(
+            generate(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    @app.get("/api/jira/jql-import/stream")
+    async def stream_jira_jql_import(jql: str = "", track_name: str = ""):
+        import json as _json
+
+        async def generate():
+            from core.jira_client import JiraClient
+            from core.jira_refiner import refine_task_description
+            from core.track_manager import new_track as _new_track
+            from core.task_engine import add_tasks_bulk as _add_tasks_bulk
+
+            clean_jql = jql.strip()
+            clean_name = track_name.strip()
+            if not clean_jql or not clean_name:
+                yield f"data: {_json.dumps({'event': 'error', 'detail': 'jql and track_name are required'})}\n\n"
+                yield "data: __DONE__\n\n"
+                return
+
+            try:
+                client = await asyncio.to_thread(JiraClient.from_settings)
+            except Exception as exc:
+                yield f"data: {_json.dumps({'event': 'error', 'detail': f'Jira not configured: {exc}'})}\n\n"
+                yield "data: __DONE__\n\n"
+                return
+
+            try:
+                issues = await asyncio.to_thread(client.fetch_issues_by_jql, clean_jql, 200)
+            except RuntimeError as exc:
+                yield f"data: {_json.dumps({'event': 'error', 'detail': str(exc)})}\n\n"
+                yield "data: __DONE__\n\n"
+                return
+
+            yield f"data: {_json.dumps({'event': 'start', 'total': len(issues), 'track_name': clean_name})}\n\n"
+
+            try:
+                meta = await asyncio.to_thread(_new_track, clean_name, track_type="feature")
+                track_id = meta["id"]
+            except Exception as exc:
+                yield f"data: {_json.dumps({'event': 'error', 'detail': f'Failed to create track: {exc}'})}\n\n"
+                yield "data: __DONE__\n\n"
+                return
+
+            task_list = []
+            for index, issue in enumerate(issues):
+                yield f"data: {_json.dumps({'event': 'issue_start', 'index': index, 'total': len(issues), 'key': issue['key'], 'summary': issue['summary']})}\n\n"
+                try:
+                    description = await asyncio.to_thread(
+                        refine_task_description,
+                        issue["summary"],
+                        issue.get("description") or "",
+                    )
+                    task_list.append({"title": issue["summary"], "description": description})
+                    yield f"data: {_json.dumps({'event': 'issue_done', 'index': index, 'key': issue['key']})}\n\n"
+                except Exception as exc:
+                    task_list.append({
+                        "title": issue["summary"],
+                        "description": issue.get("description") or issue["summary"],
+                    })
+                    yield f"data: {_json.dumps({'event': 'issue_error', 'index': index, 'key': issue['key'], 'detail': str(exc)})}\n\n"
+
+            if task_list:
+                await asyncio.to_thread(_add_tasks_bulk, track_id, task_list)
+
+            yield f"data: {_json.dumps({'event': 'complete', 'plan_id': track_id, 'task_count': len(task_list)})}\n\n"
+            yield "data: __DONE__\n\n"
+
+        return StreamingResponse(
+            generate(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    @app.post("/api/jira/jql-import")
+    def import_jira_jql(req: ImportJqlRequest):
+        from core.jira_client import JiraClient
+        from core.track_manager import new_track as _new_track
+        from core.task_engine import add_tasks_bulk as _add_tasks_bulk
+
+        track_name = req.track_name.strip()
+        if not track_name:
+            raise HTTPException(status_code=422, detail="track_name is required")
+        jql = req.jql.strip()
+        if not jql:
+            raise HTTPException(status_code=422, detail="jql is required")
+
+        try:
+            client = JiraClient.from_settings()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Jira not configured: {exc}")
+
+        validation = client.validate_jql(jql)
+        if not validation["ok"]:
+            raise HTTPException(status_code=400, detail=validation.get("error", "Invalid JQL"))
+
+        try:
+            issues = client.fetch_issues_by_jql(jql, max_results=200)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+        meta = _new_track(name=track_name, track_type="feature")
+        track_id = meta["id"]
+
+        task_list = [
+            {
+                "title": issue["summary"],
+                "description": issue.get("description") or "",
+            }
+            for issue in issues
+        ]
+        if task_list:
+            _add_tasks_bulk(track_id, task_list)
+
+        return {"plan_id": track_id}
 
     @app.get("/")
     async def index():

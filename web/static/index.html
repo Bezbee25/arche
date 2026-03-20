@@ -45,6 +45,8 @@
       <span id="project-name" class="project-name">loading...</span>
       <span class="header-actions">
         <button id="btn-new-plan" class="btn-sm">+ New track</button>
+        <button id="btn-jira-epic" class="btn-sm btn-ghost">+ Jira Epic</button>
+        <button id="btn-jira-jql" class="btn-sm btn-ghost">+ Jira JQL</button>
         <button id="btn-lock" class="btn-ghost btn-sm" title="Session Lock">🔓</button>
         <button id="btn-docs" class="btn-sm btn-ghost" title="Documentation">❓</button>
         <div class="settings-menu-wrap">
@@ -292,6 +294,42 @@
     </div>
   </div>
 
+  <!-- Jira Epic import modal -->
+  <div id="modal-jira-overlay" class="hidden modal-overlay">
+    <div class="modal" id="modal-jira">
+      <h3>Import Jira Epic</h3>
+      <div id="jira-input-section">
+        <div class="modal-section-label">Epic key</div>
+        <input id="jira-epic-key" type="text" placeholder="e.g. PROJ-123" autocomplete="off">
+      </div>
+      <div id="jira-import-status" class="jira-status" style="margin-top:8px;min-height:18px;"></div>
+      <div id="jira-progress" style="display:none;max-height:240px;overflow-y:auto;margin-top:8px;"></div>
+      <div class="modal-actions">
+        <button id="modal-jira-cancel" class="btn-ghost">Cancel</button>
+        <button id="modal-jira-import" class="btn-primary">Import ✦</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Jira JQL import modal -->
+  <div id="modal-jira-jql-overlay" class="hidden modal-overlay">
+    <div class="modal" id="modal-jira-jql">
+      <h3>Import from Jira JQL</h3>
+      <div class="modal-section-label">Track name</div>
+      <input id="jira-jql-name" type="text" placeholder="e.g. Sprint 42 – Backend" autocomplete="off">
+      <div class="modal-section-label" style="margin-top:12px;">JQL query</div>
+      <input id="jira-jql-query" type="text" placeholder='e.g. project = PROJ AND sprint = "Sprint 42"' autocomplete="off">
+      <div id="jira-jql-test-status" class="jira-status" style="margin-top:8px;min-height:18px;"></div>
+      <div id="jira-jql-preview" style="display:none;margin-top:8px;max-height:180px;overflow-y:auto;"></div>
+      <div id="jira-jql-progress" style="display:none;margin-top:8px;max-height:240px;overflow-y:auto;"></div>
+      <div class="modal-actions">
+        <button id="modal-jira-jql-cancel" class="btn-ghost">Cancel</button>
+        <button id="modal-jira-jql-test" class="btn-ghost">Test JQL</button>
+        <button id="modal-jira-jql-import" class="btn-primary" disabled>Import ✦</button>
+      </div>
+    </div>
+  </div>
+
   <!-- New phase modal -->
   <div id="modal-phase-overlay" class="hidden modal-overlay">
     <div class="modal">
@@ -442,6 +480,7 @@
         <button class="settings-tab active" data-tab="paths">Protected paths</button>
         <button class="settings-tab" data-tab="models">CLI &amp; Model &amp; Agents</button>
         <button class="settings-tab" data-tab="security">🔐 Security</button>
+        <button class="settings-tab" data-tab="jira">Jira</button>
       </div>
 
       <!-- Tab: Protected paths -->
@@ -477,6 +516,33 @@
         <div class="password-input-row">
           <input id="settings-password-input" type="password" placeholder="Enter password (min 4 chars)">
           <button id="settings-password-toggle" class="btn-ghost btn-sm password-toggle">👁</button>
+        </div>
+      </div>
+
+      <!-- Tab: Jira -->
+      <div id="settings-tab-jira" class="hidden">
+        <div class="settings-section-label">Jira Connection</div>
+        <div class="settings-section-hint">Connect to a Jira instance to import epics as tracks.</div>
+        <div class="jira-settings-form">
+          <div class="jira-field">
+            <label class="jira-field-label">Jira URL</label>
+            <input id="settings-jira-url" type="url" placeholder="https://yourcompany.atlassian.net">
+          </div>
+          <div class="jira-field">
+            <label class="jira-field-label">Login (email)</label>
+            <input id="settings-jira-login" type="email" placeholder="you@company.com">
+          </div>
+          <div class="jira-field">
+            <label class="jira-field-label">API Key</label>
+            <div class="jira-api-key-row">
+              <input id="settings-jira-api-key" type="password" placeholder="Your Jira API token">
+              <button id="settings-jira-api-key-toggle" class="btn-ghost btn-sm password-toggle" type="button">👁</button>
+            </div>
+          </div>
+          <div class="jira-test-row">
+            <button id="settings-jira-test" class="btn-sm" type="button">Test connection</button>
+            <span id="jira-connection-status" class="jira-status"></span>
+          </div>
         </div>
       </div>
 

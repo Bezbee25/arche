@@ -112,6 +112,10 @@ const api = {
   verifyPassword: (password) => apiFetch('/api/settings/password/verify', { method: 'POST', body: JSON.stringify({ password }) }),
   updatePassword: (password) => apiFetch('/api/settings/password', { method: 'PATCH', body: JSON.stringify({ password }) }),
   clearPassword: () => apiFetch('/api/settings/password/clear', { method: 'POST' }),
+  // Jira
+  importEpic: (epicKey) => apiFetch('/api/jira/import-epic', { method: 'POST', body: JSON.stringify({ epic_key: epicKey }) }),
+  validateJql: (jql) => apiFetch('/api/jira/validate-jql', { method: 'POST', body: JSON.stringify({ jql }) }),
+  importJql: (jql, trackName) => apiFetch('/api/jira/jql-import', { method: 'POST', body: JSON.stringify({ jql, track_name: trackName }) }),
   // Agents
   listAgents: () => apiFetch('/api/agents'),
   getAgent: (id) => apiFetch(`/api/agents/${id}`),
@@ -2898,6 +2902,31 @@ function setupEventListeners() {
     $id('modal-plan-name').focus();
   });
 
+  // Jira JQL import button
+  $id('btn-jira-jql').addEventListener('click', openJiraJqlModal);
+  $id('modal-jira-jql-cancel').addEventListener('click', closeJiraJqlModal);
+  $id('modal-jira-jql-overlay').addEventListener('click', (e) => {
+    if (e.target === $id('modal-jira-jql-overlay')) closeJiraJqlModal();
+  });
+  $id('modal-jira-jql-test').addEventListener('click', testJiraJql);
+  $id('modal-jira-jql-import').addEventListener('click', importJiraJql);
+  $id('jira-jql-query').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') testJiraJql();
+    if (e.key === 'Escape') closeJiraJqlModal();
+  });
+
+  // Jira Epic import button
+  $id('btn-jira-epic').addEventListener('click', openJiraEpicModal);
+  $id('modal-jira-cancel').addEventListener('click', closeJiraEpicModal);
+  $id('modal-jira-overlay').addEventListener('click', (e) => {
+    if (e.target === $id('modal-jira-overlay')) closeJiraEpicModal();
+  });
+  $id('modal-jira-import').addEventListener('click', importJiraEpic);
+  $id('jira-epic-key').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') importJiraEpic();
+    if (e.key === 'Escape') closeJiraEpicModal();
+  });
+
   // Modal cancel
   $id('modal-cancel').addEventListener('click', closeModal);
   $id('modal-overlay').addEventListener('click', (e) => {
@@ -3091,6 +3120,310 @@ function closeModal() {
   ['task-subtype-test','task-subtype-doc','debug-subtype-regression']
     .forEach(id => { const el = $id(id); if (el) el.checked = false; });
   selectTrackType('feature');
+}
+
+let _jiraImportES = null;
+
+function _resetJiraModal() {
+  $id('jira-epic-key').value = '';
+  const status = $id('jira-import-status');
+  status.textContent = '';
+  status.className = 'jira-status';
+  const progress = $id('jira-progress');
+  progress.style.display = 'none';
+  progress.innerHTML = '';
+  $id('jira-input-section').style.display = '';
+  $id('modal-jira-import').disabled = false;
+}
+
+function openJiraEpicModal() {
+  _resetJiraModal();
+  $id('modal-jira-overlay').classList.remove('hidden');
+  $id('jira-epic-key').focus();
+}
+
+function closeJiraEpicModal() {
+  if (_jiraImportES) {
+    _jiraImportES.close();
+    _jiraImportES = null;
+  }
+  $id('modal-jira-overlay').classList.add('hidden');
+  _resetJiraModal();
+}
+
+let _jiraJqlTestOk = false;
+let _jiraJqlImportES = null;
+let _jiraJqlViewTrackPlanId = null;
+
+function _resetJiraJqlModal() {
+  _jiraJqlViewTrackPlanId = null;
+  $id('jira-jql-name').value = '';
+  $id('jira-jql-query').value = '';
+  const status = $id('jira-jql-test-status');
+  status.textContent = '';
+  status.className = 'jira-status';
+  const preview = $id('jira-jql-preview');
+  preview.style.display = 'none';
+  preview.innerHTML = '';
+  const progress = $id('jira-jql-progress');
+  progress.style.display = 'none';
+  progress.innerHTML = '';
+  const importBtn = $id('modal-jira-jql-import');
+  importBtn.textContent = 'Import ✦';
+  importBtn.disabled = true;
+  $id('modal-jira-jql-test').disabled = false;
+  $id('modal-jira-jql-cancel').textContent = 'Cancel';
+  _jiraJqlTestOk = false;
+}
+
+function openJiraJqlModal() {
+  _resetJiraJqlModal();
+  $id('modal-jira-jql-overlay').classList.remove('hidden');
+  $id('jira-jql-name').focus();
+}
+
+function closeJiraJqlModal() {
+  if (_jiraJqlImportES) {
+    _jiraJqlImportES.close();
+    _jiraJqlImportES = null;
+  }
+  $id('modal-jira-jql-overlay').classList.add('hidden');
+  _resetJiraJqlModal();
+}
+
+async function testJiraJql() {
+  const jql = $id('jira-jql-query').value.trim();
+  if (!jql) return;
+  const status = $id('jira-jql-test-status');
+  const preview = $id('jira-jql-preview');
+  status.textContent = 'Validating…';
+  status.className = 'jira-status loading';
+  preview.style.display = 'none';
+  preview.innerHTML = '';
+  $id('modal-jira-jql-test').disabled = true;
+  $id('modal-jira-jql-import').disabled = true;
+  _jiraJqlTestOk = false;
+  try {
+    const result = await api.validateJql(jql);
+    if (result.ok) {
+      status.textContent = `✓ ${result.total} issue${result.total !== 1 ? 's' : ''} matched`;
+      status.className = 'jira-status ok';
+      if (result.preview && result.preview.length > 0) {
+        preview.style.display = 'block';
+        preview.innerHTML = result.preview
+          .map(s => `<div class="jira-progress-item"><span class="jira-progress-summary" style="max-width:100%">${escapeHtml(s)}</span></div>`)
+          .join('');
+      }
+      _jiraJqlTestOk = true;
+      $id('modal-jira-jql-import').disabled = false;
+    } else {
+      status.textContent = `✗ ${result.error || 'Invalid JQL'}`;
+      status.className = 'jira-status err';
+    }
+  } catch (err) {
+    status.textContent = `✗ ${err.message || 'Connection error'}`;
+    status.className = 'jira-status err';
+  } finally {
+    $id('modal-jira-jql-test').disabled = false;
+  }
+}
+
+function importJiraJql() {
+  if (_jiraJqlViewTrackPlanId) {
+    closeJiraJqlModal();
+    state.selectedPlanId = _jiraJqlViewTrackPlanId;
+    refresh();
+    return;
+  }
+
+  const name = $id('jira-jql-name').value.trim();
+  const jql = $id('jira-jql-query').value.trim();
+  if (!name) { $id('jira-jql-name').focus(); return; }
+  if (!jql) { $id('jira-jql-query').focus(); return; }
+  if (!_jiraJqlTestOk) {
+    const status = $id('jira-jql-test-status');
+    status.textContent = 'Please test the JQL query first.';
+    status.className = 'jira-status err';
+    return;
+  }
+
+  const status = $id('jira-jql-test-status');
+  const importBtn = $id('modal-jira-jql-import');
+  const testBtn = $id('modal-jira-jql-test');
+  const preview = $id('jira-jql-preview');
+  const progress = $id('jira-jql-progress');
+
+  status.textContent = 'Starting import…';
+  status.className = 'jira-status loading';
+  importBtn.disabled = true;
+  testBtn.disabled = true;
+  preview.style.display = 'none';
+  progress.style.display = 'block';
+  progress.innerHTML = '';
+
+  if (_jiraJqlImportES) { _jiraJqlImportES.close(); _jiraJqlImportES = null; }
+
+  let completePlanId = null;
+  let completeTaskCount = 0;
+  const url = `/api/jira/jql-import/stream?jql=${encodeURIComponent(jql)}&track_name=${encodeURIComponent(name)}`;
+  const es = new EventSource(url);
+  _jiraJqlImportES = es;
+
+  es.onmessage = (evt) => {
+    const raw = evt.data;
+    if (raw === '__DONE__') {
+      es.close();
+      _jiraJqlImportES = null;
+      if (completePlanId) {
+        const taskWord = completeTaskCount === 1 ? 'task' : 'tasks';
+        status.textContent = `✓ ${completeTaskCount} ${taskWord} imported`;
+        status.className = 'jira-status ok';
+        _jiraJqlViewTrackPlanId = completePlanId;
+        importBtn.textContent = 'View Track →';
+        importBtn.disabled = false;
+        $id('modal-jira-jql-cancel').textContent = 'Close';
+      } else {
+        testBtn.disabled = false;
+      }
+      return;
+    }
+    let msg;
+    try { msg = JSON.parse(raw); } catch { return; }
+    switch (msg.event) {
+      case 'error':
+        status.textContent = `✗ ${msg.detail || 'Import failed'}`;
+        status.className = 'jira-status err';
+        importBtn.disabled = false;
+        testBtn.disabled = false;
+        es.close();
+        _jiraJqlImportES = null;
+        break;
+      case 'start':
+        status.textContent = `Refining ${msg.total} issue${msg.total !== 1 ? 's' : ''}…`;
+        status.className = 'jira-status loading';
+        break;
+      case 'issue_start': {
+        const row = document.createElement('div');
+        row.className = 'jira-progress-item';
+        row.id = `jql-issue-${msg.key}`;
+        row.innerHTML = `<span class="jira-progress-icon">⋯</span><span class="jira-progress-key">${escapeHtml(msg.key)}</span><span class="jira-progress-summary">${escapeHtml(msg.summary)}</span>`;
+        progress.appendChild(row);
+        progress.scrollTop = progress.scrollHeight;
+        break;
+      }
+      case 'issue_done': {
+        const row = $id(`jql-issue-${msg.key}`);
+        if (row) row.querySelector('.jira-progress-icon').textContent = '✓';
+        break;
+      }
+      case 'issue_error': {
+        const row = $id(`jql-issue-${msg.key}`);
+        if (row) row.querySelector('.jira-progress-icon').textContent = '✗';
+        break;
+      }
+      case 'complete':
+        completePlanId = msg.plan_id;
+        completeTaskCount = msg.task_count || 0;
+        break;
+    }
+  };
+
+  es.onerror = () => {
+    es.close();
+    _jiraJqlImportES = null;
+    status.textContent = '✗ Connection lost during import';
+    status.className = 'jira-status err';
+    importBtn.disabled = false;
+    testBtn.disabled = false;
+  };
+}
+
+function importJiraEpic() {
+  const epicKey = $id('jira-epic-key').value.trim().toUpperCase();
+  if (!epicKey) return;
+
+  const status = $id('jira-import-status');
+  const importBtn = $id('modal-jira-import');
+  const progress = $id('jira-progress');
+
+  status.textContent = 'Connecting to Jira…';
+  status.className = 'jira-status loading';
+  importBtn.disabled = true;
+  $id('jira-input-section').style.display = 'none';
+
+  if (_jiraImportES) { _jiraImportES.close(); _jiraImportES = null; }
+
+  const childItems = {};
+  let completePlanId = null;
+
+  const es = new EventSource(`/api/jira/import-epic/stream?epic_key=${encodeURIComponent(epicKey)}`);
+  _jiraImportES = es;
+
+  es.onmessage = (evt) => {
+    const raw = evt.data;
+    if (raw === '__DONE__') {
+      es.close();
+      _jiraImportES = null;
+      if (completePlanId) {
+        closeJiraEpicModal();
+        state.selectedPlanId = completePlanId;
+        refresh();
+      }
+      return;
+    }
+    let msg;
+    try { msg = JSON.parse(raw); } catch { return; }
+
+    if (msg.event === 'error') {
+      status.textContent = msg.detail || 'Import failed';
+      status.className = 'jira-status err';
+      $id('jira-input-section').style.display = '';
+      importBtn.disabled = false;
+      es.close();
+      _jiraImportES = null;
+      return;
+    }
+    if (msg.event === 'start') {
+      const noun = msg.total === 1 ? 'issue' : 'issues';
+      status.textContent = `${msg.summary} — ${msg.total} ${noun}`;
+      status.className = 'jira-status ok';
+      if (msg.total > 0) progress.style.display = 'block';
+      return;
+    }
+    if (msg.event === 'child_start') {
+      const item = document.createElement('div');
+      item.className = 'jira-progress-item';
+      item.innerHTML = `<span class="jira-progress-icon">⋯</span><span class="jira-progress-key">${msg.key}</span><span class="jira-progress-summary">${msg.summary}</span>`;
+      progress.appendChild(item);
+      childItems[msg.key] = item;
+      progress.scrollTop = progress.scrollHeight;
+      return;
+    }
+    if (msg.event === 'child_done') {
+      const item = childItems[msg.key];
+      if (item) { item.querySelector('.jira-progress-icon').textContent = '✓'; item.classList.add('done'); }
+      return;
+    }
+    if (msg.event === 'child_error') {
+      const item = childItems[msg.key];
+      if (item) { item.querySelector('.jira-progress-icon').textContent = '✗'; item.classList.add('err'); }
+      return;
+    }
+    if (msg.event === 'complete') {
+      completePlanId = msg.plan_id;
+      status.textContent = 'Import complete!';
+      status.className = 'jira-status ok';
+    }
+  };
+
+  es.onerror = () => {
+    es.close();
+    _jiraImportES = null;
+    status.textContent = 'Connection error during import';
+    status.className = 'jira-status err';
+    $id('jira-input-section').style.display = '';
+    importBtn.disabled = false;
+  };
 }
 
 function _buildSpec(name, goal, context, requirements, constraints, outOfScope) {
@@ -3625,6 +3958,7 @@ function _switchSettingsTab(tab) {
   $id('settings-tab-paths').classList.toggle('hidden', tab !== 'paths');
   $id('settings-tab-models').classList.toggle('hidden', tab !== 'models');
   $id('settings-tab-security').classList.toggle('hidden', tab !== 'security');
+  $id('settings-tab-jira').classList.toggle('hidden', tab !== 'jira');
 }
 
 async function _loadModelsTab() {
@@ -3739,12 +4073,61 @@ async function _loadModelsTab() {
   }
 }
 
+async function _testJiraConnection(url, login, apiKey) {
+  const status = $id('jira-connection-status');
+  status.className = 'jira-status loading';
+  status.textContent = 'Checking…';
+  try {
+    const result = await apiFetch('/api/settings/jira/validate', {
+      method: 'POST',
+      body: JSON.stringify({ url, login, api_key: apiKey }),
+    });
+    if (result.ok) {
+      status.className = 'jira-status ok';
+      status.textContent = `✓ Connected${result.display_name ? ` as ${result.display_name}` : ''}`;
+    } else {
+      status.className = 'jira-status err';
+      status.textContent = `✗ ${result.error || 'Connection failed'}`;
+    }
+  } catch (err) {
+    status.className = 'jira-status err';
+    status.textContent = `✗ ${err.message || 'Request failed'}`;
+  }
+}
+
+async function _loadJiraTab() {
+  try {
+    const data = await apiFetch('/api/settings/jira');
+    $id('settings-jira-url').value = data.url || '';
+    $id('settings-jira-login').value = data.login || '';
+    $id('settings-jira-api-key').value = data.api_key || '';
+  } catch (_) {}
+  const toggle = $id('settings-jira-api-key-toggle');
+  if (toggle && !toggle._jiraToggleBound) {
+    toggle._jiraToggleBound = true;
+    toggle.addEventListener('click', () => {
+      const input = $id('settings-jira-api-key');
+      input.type = input.type === 'password' ? 'text' : 'password';
+    });
+  }
+  const testBtn = $id('settings-jira-test');
+  if (testBtn && !testBtn._jiraTestBound) {
+    testBtn._jiraTestBound = true;
+    testBtn.addEventListener('click', () => {
+      _testJiraConnection(
+        $id('settings-jira-url').value.trim(),
+        $id('settings-jira-login').value.trim(),
+        $id('settings-jira-api-key').value
+      );
+    });
+  }
+}
+
 async function openSettingsModal() {
   try {
     const data = await apiFetch('/api/settings/protected-paths');
     $id('settings-protected-paths').value = (data.protected_paths || []).join('\n');
   } catch (_) {}
-  // Load password status
   try {
     const pwStatus = await api.getPasswordStatus();
     if (pwStatus && pwStatus.has_password) {
@@ -3753,6 +4136,7 @@ async function openSettingsModal() {
       $id('settings-password-input').placeholder = 'Enter password (min 4 chars)';
     }
   } catch (_) {}
+  await _loadJiraTab();
   _switchSettingsTab('paths');
   await _loadModelsTab();
   $id('modal-settings-overlay').classList.remove('hidden');
@@ -3792,6 +4176,17 @@ async function saveSettings() {
       if (password) {
         await updateSessionPassword(password);
       }
+    } else if (_settingsActiveTab === 'jira') {
+      const jiraUrl = $id('settings-jira-url').value.trim();
+      const jiraLogin = $id('settings-jira-login').value.trim();
+      const jiraApiKey = $id('settings-jira-api-key').value;
+      await apiFetch('/api/settings/jira', {
+        method: 'PATCH',
+        body: JSON.stringify({ url: jiraUrl, login: jiraLogin, api_key: jiraApiKey }),
+      });
+      showToast('Settings saved');
+      _testJiraConnection(jiraUrl, jiraLogin, jiraApiKey);
+      return;
     }
     closeSettingsModal();
     showToast('Settings saved');
