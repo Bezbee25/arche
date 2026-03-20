@@ -112,6 +112,7 @@ const api = {
   verifyPassword: (password) => apiFetch('/api/settings/password/verify', { method: 'POST', body: JSON.stringify({ password }) }),
   updatePassword: (password) => apiFetch('/api/settings/password', { method: 'PATCH', body: JSON.stringify({ password }) }),
   clearPassword: () => apiFetch('/api/settings/password/clear', { method: 'POST' }),
+  getJiraSettings: () => apiFetch('/api/settings/jira'),
   // Jira
   importEpic: (epicKey) => apiFetch('/api/jira/import-epic', { method: 'POST', body: JSON.stringify({ epic_key: epicKey }) }),
   validateJql: (jql) => apiFetch('/api/jira/validate-jql', { method: 'POST', body: JSON.stringify({ jql }) }),
@@ -196,6 +197,7 @@ async function init() {
   }
   setupScrollDetection();
   updateInstructionSelectionFeedback();
+  updateJiraButtonState();
   // Setup lock screen on page load
   await setupLockScreen();
   // Listen for lock state changes from other tabs
@@ -1500,6 +1502,20 @@ async function loadInstructions() {
     console.error('Error loading instructions:', error);
     $id('instruction-list').innerHTML = '<div class="error">Failed to load instructions</div>';
   }
+}
+
+async function updateJiraButtonState() {
+  try {
+    const s = await api.getJiraSettings();
+    const configured = !!(s && s.url && s.login && s.api_key);
+    const title = configured ? '' : 'Configure Jira in Settings to enable';
+    ['btn-jira-epic', 'btn-jira-jql'].forEach(id => {
+      const btn = $id(id);
+      if (!btn) return;
+      btn.disabled = !configured;
+      btn.title = title;
+    });
+  } catch (_) {}
 }
 
 function updateInstructionSelectionFeedback() {
@@ -3205,7 +3221,10 @@ async function testJiraJql() {
   _jiraJqlTestOk = false;
   try {
     const result = await api.validateJql(jql);
-    if (result.ok) {
+    if (!result) {
+      status.textContent = '✗ Server error — check Jira settings';
+      status.className = 'jira-status err';
+    } else if (result.ok) {
       status.textContent = `✓ ${result.total} issue${result.total !== 1 ? 's' : ''} matched`;
       status.className = 'jira-status ok';
       if (result.preview && result.preview.length > 0) {
@@ -4186,6 +4205,7 @@ async function saveSettings() {
       });
       showToast('Settings saved');
       _testJiraConnection(jiraUrl, jiraLogin, jiraApiKey);
+      updateJiraButtonState();
       return;
     }
     closeSettingsModal();

@@ -2087,11 +2087,11 @@ def create_app() -> FastAPI:
         try:
             client = JiraClient.from_settings()
         except Exception as exc:
-            raise HTTPException(status_code=400, detail=f"Jira not configured: {exc}")
-        result = client.validate_jql(req.jql)
-        if not result["ok"]:
-            raise HTTPException(status_code=400, detail=result["error"])
-        return result
+            return {"ok": False, "error": f"Jira not configured: {exc}"}
+        try:
+            return client.validate_jql(req.jql)
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
 
     @app.post("/api/jira/import-epic")
     @app.post("/api/plans/from-jira-epic")
