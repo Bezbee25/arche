@@ -21,8 +21,8 @@ const state = {
   editingTask: null,
   doneTask: null,
   blockTask: null,
-  uiSelectedTaskId: null,   // tache cliquee dans l'UI (pour les actions)
-  bulkSelectedTaskIds: [],  // taches selectionnees (checkboxes) - preserves order
+  uiSelectedTaskId: null,   // task clicked in the UI (for actions)
+  bulkSelectedTaskIds: [],  // tasks selected via checkboxes - preserves order
   taskFilter: 'all',        // 'all' | 'TODO' | 'SELECTED' | 'IN_PROGRESS' | 'DONE'
   runTask: null,            // { trackId, taskId } | null
   interview: null,          // { planId, description, qa, currentQuestion } | null
@@ -36,9 +36,9 @@ const state = {
   hasPassword: false,       // whether a password is set
   sessionLocked: false,     // whether session is currently locked
   selectedInstructionIds: new Set(JSON.parse(localStorage.getItem('selectedInstructionIds') || '[]')), // instructions selectionnees (checkboxes)
-  projectAgentsByPhase: {}, // agents par phase LLM (chargé depuis project.agents)
-  specTaskCount: 0, // nombre de taches dans le track actif (chargé au render spec)
-  specPhaseCount: 0, // nombre de phases dans le track actif (chargé au render spec)
+  projectAgentsByPhase: {}, // agents per LLM phase (loaded from project.agents)
+  specTaskCount: 0, // task count in active track (loaded at spec render)
+  specPhaseCount: 0, // phase count in active track (loaded at spec render)
 };
 
 let _termCounter = 0;
@@ -215,7 +215,7 @@ async function refresh() {
       state.selectedPlanId = activePlan.id;
     }
 
-    // Re-render le panel uniquement si une tache tourne (evite le sursaut d'affichage)
+    // Re-render the panel only if a task is running (avoids display flicker)
     if (!state.outputRunning) return;
 
     // Skip panel re-render if user is scrolling or has a dropdown open
@@ -291,7 +291,7 @@ async function renderPanelFor(planId) {
   const plan = await api.getTrack(planId);
   if (!plan) return;
 
-  // Sauvegarde l'etat editeur du track precedent, restaure celui du nouveau
+  // Save editor state for previous track, restore for the new one
   if (state._lastPlan && state._lastPlan.id !== planId) {
     _saveEditorStateForTrack(state._lastPlan.id);
     _restoreEditorStateForTrack(planId);
@@ -1190,7 +1190,7 @@ async function renderInstructions() {
         <input type="text" id="instruction-search" placeholder="Search instructions..." />
         <div class="instructions-filter-bar">
           <button class="instr-filter-btn active" data-filter="all">Tous</button>
-          <button class="instr-filter-btn" data-filter="selected">Sélectionnés</button>
+          <button class="instr-filter-btn" data-filter="selected">Selected</button>
         </div>
         <button id="btn-new-instruction" class="btn-new-instruction">+ New</button>
       </div>
@@ -1773,7 +1773,7 @@ async function openFile(filePath) {
   const curDirty = _isTabDirty(curTab);
 
   if (curTab && !curDirty && !curTab.touched) {
-    // Replace current tab seulement si jamais modifie (ni dirty ni sauve après modif)
+    // Replace current tab only if never modified (neither dirty nor saved after edit)
     curTab.path = filePath;
     curTab.savedContent = data.content;
     curTab.draftContent = null;
@@ -1782,7 +1782,7 @@ async function openFile(filePath) {
     curTab.touched = false;
     _activeTabPath = filePath;
   } else {
-    // Fichier modifie (même si sauve) ou jamais ouvert → nouvel onglet
+    // File modified (even if saved) or never opened → new tab
     if (curTab && _cmEditor) {
       curTab.draftContent = _cmEditor.getValue();
       curTab.cursor = _cmEditor.getCursor();
@@ -1890,36 +1890,64 @@ async function renderSpec(planId) {
         const isImg = /\.(png|jpg|jpeg|gif|webp|bmp|svg)$/i.test(f);
         return `<span class="task-file-tag">${isImg ? '🖼' : '📄'} ${escHtml(f)}</span>`;
       }).join('')
-    : '<span style="color:var(--text-dim);font-size:12px">Aucun fichier de référence.</span>';
+    : '<span style="color:var(--text-dim);font-size:12px">No reference files.</span>';
 
   const hasContent = taskCount > 0 || namedPhaseCount > 0;
   const phasesDisabled = hasContent ? 'disabled' : '';
   const tasksDisabled = hasContent ? 'disabled' : '';
 
   pane.innerHTML = `
-    <div class="spec-toolbar">
+    <div class="spec-toolbar" id="spec-toolbar-view">
       <button class="btn-primary btn-sm" onclick="refineSpec('${planId}')">✦ Refine spec</button>
+      <button class="btn-ghost btn-sm" onclick="openSpecEditor('${planId}')">✎ Edit</button>
       <button class="btn-ghost btn-sm" data-phase-count="${phaseCount}" onclick="generatePhases('${planId}')" ${phasesDisabled}>⚡ Generate phases</button>
       <button class="btn-ghost btn-sm" data-task-count="${taskCount}" onclick="generateTasks('${planId}')" ${tasksDisabled}>⚡ Generate tasks</button>
     </div>
-    <pre class="spec-content">${escHtml(data.content)}</pre>
+    <div class="spec-toolbar hidden" id="spec-toolbar-edit">
+      <button class="btn-primary btn-sm" onclick="saveSpecEdit('${planId}')">✓ Save</button>
+      <button class="btn-ghost btn-sm" onclick="cancelSpecEdit('${planId}')">✕ Cancel</button>
+    </div>
+    <pre class="spec-content" id="spec-view">${escHtml(data.content)}</pre>
+    <textarea class="spec-editor hidden" id="spec-edit-area">${escHtml(data.content)}</textarea>
     <div class="track-files-section">
       <div class="track-files-header">
-        <span>📎 Fichiers de référence du track</span>
-        <button class="btn-ghost btn-sm" onclick="openTrackFilesModal('${planId}')">Modifier</button>
+        <span>📎 Track reference files</span>
+        <button class="btn-ghost btn-sm" onclick="openTrackFilesModal('${planId}')">Edit</button>
       </div>
       <div class="track-files-list">${filesListHtml}</div>
     </div>`;
 }
 
+function openSpecEditor(planId) {
+  $id('spec-toolbar-view').classList.add('hidden');
+  $id('spec-toolbar-edit').classList.remove('hidden');
+  $id('spec-view').classList.add('hidden');
+  $id('spec-edit-area').classList.remove('hidden');
+  $id('spec-edit-area').focus();
+}
+
+async function saveSpecEdit(planId) {
+  const content = $id('spec-edit-area').value;
+  await api.saveSpec(planId, content);
+  showToast('✓ Spec saved');
+  await renderSpec(planId);
+}
+
+function cancelSpecEdit(planId) {
+  $id('spec-toolbar-edit').classList.add('hidden');
+  $id('spec-toolbar-view').classList.remove('hidden');
+  $id('spec-edit-area').classList.add('hidden');
+  $id('spec-view').classList.remove('hidden');
+}
+
 async function openTrackFilesModal(planId) {
   const data = await api.getTrackFiles(planId);
   const files = (data && data.files) ? data.files : [];
-  const newVal = prompt('Fichiers de référence du track (un chemin par ligne) :', files.join('\n'));
+  const newVal = prompt('Track reference files (one path per line):', files.join('\n'));
   if (newVal === null) return; // cancelled
   const newFiles = newVal.split('\n').map(l => l.trim()).filter(Boolean);
   await api.setTrackFiles(planId, newFiles);
-  showToast('✓ Fichiers du track mis à jour');
+  showToast('✓ Track files updated');
   await renderSpec(planId);
 }
 
@@ -3974,6 +4002,9 @@ window.selectAllTasks = selectAllTasks;
 window.clearBulkSelection = clearBulkSelection;
 window.generateTasks = generateTasks;
 window.refineSpec = refineSpec;
+window.openSpecEditor = openSpecEditor;
+window.saveSpecEdit = saveSpecEdit;
+window.cancelSpecEdit = cancelSpecEdit;
 window.refineAndGenerate = refineAndGenerate;
 window.generatePhases = generatePhases;
 window.generateTasksForPhase = generateTasksForPhase;
