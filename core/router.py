@@ -11,9 +11,7 @@ from core.model_registry import ModelRegistry
 # Default model assignments per phase (new tool/alias format)
 DEFAULT_MODELS = {
     "spec":   "claude/opus",
-    "think":  "claude/opus",
     "plan":   "claude/sonnet",
-    "arch":   "claude/sonnet",
     "dev":    "claude/sonnet",
     "debug":  "claude/sonnet",
     "doc":    "gemini/flash",
@@ -23,9 +21,7 @@ DEFAULT_MODELS = {
 # Tools granted to claude per phase
 DEFAULT_TOOLS: dict[str, list[str]] = {
     "spec":   ["Read"],
-    "think":  ["Read"],
     "plan":   ["Read"],
-    "arch":   ["Read"],
     "dev":    ["Read", "Write", "Edit", "Bash"],
     "debug":  ["Read", "Write", "Edit", "Bash"],
     "doc":    ["Read", "Write", "Edit"],

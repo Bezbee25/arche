@@ -117,6 +117,7 @@ class BulkTaskRunRequest(BaseModel):
     comment: str = ""
     auto_done: bool = True
     instructions: str = ""  # Comma-separated list of instruction IDs
+    agent_id: str = ""
 
 class TemplateGenerationRequest(BaseModel):
     description: str
@@ -131,6 +132,20 @@ class TrackFilesRequest(BaseModel):
 class WriteFileRequest(BaseModel):
     path: str
     content: str
+
+class CreateAgentRequest(BaseModel):
+    name: str
+    role: str
+    description: str = ""
+    system_prompt: str = ""
+    model: Optional[str] = None
+
+class UpdateAgentRequest(BaseModel):
+    name: Optional[str] = None
+    role: Optional[str] = None
+    description: Optional[str] = None
+    system_prompt: Optional[str] = None
+    model: Optional[str] = None
 
 
 def _parse_claude_json_line(raw: str) -> str:
@@ -232,6 +247,9 @@ def create_app() -> FastAPI:
     # Ensure instructions are loaded before app starts
     from core.track_manager import load_instructions
     load_instructions()
+
+    from core.agent_manager import seed_default_agents
+    seed_default_agents()
     
     app = FastAPI(title="arche", docs_url="/api/docs")
 
@@ -300,14 +318,17 @@ def create_app() -> FastAPI:
         project = load_project() or {}
         current = project.get("models", {})
         phases = list(DEFAULT_MODELS.keys())
-        return {"tools": tools_info, "current": current, "phases": phases, "defaults": DEFAULT_MODELS}
+        return {"tools": tools_info, "current": current, "phases": phases, "defaults": DEFAULT_MODELS, "agents": project.get("agents") or {}}
 
     @app.patch("/api/settings/models")
     def patch_models_config(req: dict):
         project = load_project() or {}
-        project["models"] = req.get("models", {})
+        if "models" in req:
+            project["models"] = req["models"]
+        if "agents" in req:
+            project["agents"] = req["agents"] or {}
         save_project(project)
-        return {"ok": True, "models": project["models"]}
+        return {"ok": True}
 
     @app.get("/api/scan")
     async def stream_scan():
@@ -1140,8 +1161,8 @@ def create_app() -> FastAPI:
 
     @app.get("/api/tracks/{track_id}/tasks/{task_id}/prepare-run")
     async def prepare_task_run(
-        track_id: str, task_id: str, comment: str = "", auto_done: bool = True, 
-        instructions: str = ""
+        track_id: str, task_id: str, comment: str = "", auto_done: bool = True,
+        instructions: str = "", agent_id: str = ""
     ):
         """Prepare a task for interactive PTY execution.
 
@@ -1188,7 +1209,19 @@ def create_app() -> FastAPI:
 
         tools = get_tools_for_phase(phase, plan)
         _resolved = _resolve_model_spec(model, plan)
-        cmd = _build_cmd_from_resolved(_resolved, None, tools, image_files=_image_files or None)
+
+        # Resolve agent system prompt if an agent was selected
+        _system_prompt = None
+        if agent_id:
+            from core.agent_manager import get_agent as _get_agent_fn
+            _agent = _get_agent_fn(agent_id)
+            if _agent and _agent.get("system_prompt"):
+                _system_prompt = _agent["system_prompt"]
+                # Use agent's model if specified
+                if _agent.get("model"):
+                    _resolved = _resolve_model_spec(_agent["model"], plan)
+
+        cmd = _build_cmd_from_resolved(_resolved, _system_prompt, tools, image_files=_image_files or None)
         prompt = build_task_prompt(track_id, plan, comment=comment, selected_instruction_ids=selected_instruction_ids, attached_files=_text_files)
 
         if selected_instruction_ids:
@@ -1303,6 +1336,16 @@ def create_app() -> FastAPI:
         tools = get_tools_for_phase(phase, plan)
         _track_files_bulk = get_track_files(track_id)
 
+        # Resolve agent system prompt once for all tasks
+        _bulk_system_prompt = None
+        if req.agent_id:
+            from core.agent_manager import get_agent as _get_agent_fn
+            _bulk_agent = _get_agent_fn(req.agent_id)
+            if _bulk_agent and _bulk_agent.get("system_prompt"):
+                _bulk_system_prompt = _bulk_agent["system_prompt"]
+                if _bulk_agent.get("model"):
+                    model = _resolve_model_spec(_bulk_agent["model"], plan)
+
         async def generate_bulk():
             # Initialize the active runs list for this track
             if track_id not in _active_runs:
@@ -1334,7 +1377,7 @@ def create_app() -> FastAPI:
                     _all_files_bulk = list(dict.fromkeys(_track_files_bulk + _task_files_bulk))
                     _text_files_bulk, _image_files_bulk = split_files_by_type(_all_files_bulk)
                     _resolved_bulk = _resolve_model_spec(model, plan)
-                    cmd_base = _build_cmd_from_resolved(_resolved_bulk, None, tools, image_files=_image_files_bulk or None)
+                    cmd_base = _build_cmd_from_resolved(_resolved_bulk, _bulk_system_prompt, tools, image_files=_image_files_bulk or None)
                     if cli == "claude":
                         cmd_base += ["--output-format", "stream-json", "--verbose"]
                     prompt = build_task_prompt(track_id, plan, comment=req.comment, selected_instruction_ids=selected_instruction_ids, attached_files=_text_files_bulk)
@@ -1949,6 +1992,57 @@ def create_app() -> FastAPI:
             return {"success": True, "enabled": enabled}
         except ValueError as e:
             raise HTTPException(status_code=404, detail=str(e))
+
+    # ── Agents API ──────────────────────────────────────────────────────────
+
+    @app.get("/api/agents")
+    @app.get("/api/agents/list")
+    def get_agents():
+        from core.agent_manager import list_agents as _list_agents
+        return {"agents": _list_agents()}
+
+    @app.post("/api/agents")
+    @app.post("/api/agents/create")
+    def post_agent(req: CreateAgentRequest):
+        from core.agent_manager import create_agent as _create_agent
+        if not req.name.strip():
+            raise HTTPException(status_code=400, detail="Agent name is required")
+        agent = _create_agent(
+            name=req.name,
+            role=req.role,
+            description=req.description,
+            system_prompt=req.system_prompt,
+            model=req.model,
+        )
+        return agent
+
+    @app.get("/api/agents/{agent_id}")
+    @app.get("/api/agents/get/{agent_id}")
+    def get_agent_detail(agent_id: str):
+        from core.agent_manager import get_agent as _get_agent
+        agent = _get_agent(agent_id)
+        if not agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        return agent
+
+    @app.patch("/api/agents/{agent_id}")
+    @app.put("/api/agents/update/{agent_id}")
+    def patch_agent(agent_id: str, req: UpdateAgentRequest):
+        from core.agent_manager import update_agent as _update_agent
+        updates = {k: v for k, v in req.model_dump().items() if v is not None}
+        agent = _update_agent(agent_id, **updates)
+        if not agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        return agent
+
+    @app.delete("/api/agents/{agent_id}")
+    @app.delete("/api/agents/delete/{agent_id}")
+    def remove_agent(agent_id: str):
+        from core.agent_manager import delete_agent as _delete_agent
+        ok = _delete_agent(agent_id)
+        if not ok:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        return {"ok": True, "deleted": agent_id}
 
     @app.get("/")
     async def index():

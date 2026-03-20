@@ -62,7 +62,7 @@ GET /api/instructions/store/search?q=recherche&category=general&tags=tag1,tag2
 ```json
 {
     "instructions": [...]
-}
+} 
 ```
 
 ### 3. Récupérer une instruction spécifique

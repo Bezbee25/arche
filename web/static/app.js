@@ -36,6 +36,7 @@ const state = {
   hasPassword: false,       // whether a password is set
   sessionLocked: false,     // whether session is currently locked
   selectedInstructionIds: new Set(JSON.parse(localStorage.getItem('selectedInstructionIds') || '[]')), // instructions selectionnees (checkboxes)
+  projectAgentsByPhase: {}, // agents par phase LLM (chargé depuis project.agents)
 };
 
 let _termCounter = 0;
@@ -108,6 +109,12 @@ const api = {
   verifyPassword: (password) => apiFetch('/api/settings/password/verify', { method: 'POST', body: JSON.stringify({ password }) }),
   updatePassword: (password) => apiFetch('/api/settings/password', { method: 'PATCH', body: JSON.stringify({ password }) }),
   clearPassword: () => apiFetch('/api/settings/password/clear', { method: 'POST' }),
+  // Agents
+  listAgents: () => apiFetch('/api/agents'),
+  getAgent: (id) => apiFetch(`/api/agents/${id}`),
+  createAgent: (data) => apiFetch('/api/agents', { method: 'POST', body: JSON.stringify(data) }),
+  updateAgent: (id, data) => apiFetch(`/api/agents/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  deleteAgent: (id) => apiFetch(`/api/agents/${id}`, { method: 'DELETE' }),
   // Instructions
   getInstructions: () => apiFetch('/api/instructions/list'),
   searchInstructions: (params) => {
@@ -171,6 +178,7 @@ async function init() {
     const ts = await apiFetch('/api/settings/theme');
     if (ts && ts.theme) applyTheme(ts.theme);
   } catch (_) {}
+  state.projectAgentsByPhase = (project && project.agents) ? project.agents : {};
   await refresh();
   // Force le rendu initial du panel (refresh() skippe le panel si rien ne tourne)
   if (state.selectedPlanId) {
@@ -192,6 +200,7 @@ async function refresh() {
   const [project, plans] = await Promise.all([api.getProject(), api.getTracks()]);
   if (project) {
     $id('project-name').textContent = project.name || 'unknown project';
+    state.projectAgentsByPhase = project.agents || {};
   }
   if (plans) {
     state.plans = plans;
@@ -262,9 +271,12 @@ function renderSidebar(plans) {
       // Update sidebar selection visually
       container.querySelectorAll('.plan-item').forEach(e => e.classList.remove('active'));
       el.classList.add('active');
-      // Close instructions panel if open
+      // Close instructions/agents panel if open
       if ($id('instructions-panel').classList.contains('visible')) {
         toggleInstructionsView(false);
+      }
+      if ($id('agents-panel').classList.contains('visible')) {
+        toggleAgentsView(false);
       }
       await renderPanelFor(id);
     });
@@ -963,6 +975,192 @@ async function confirmNewPhase() {
   await renderPanelFor(planId);
 }
 
+// -- Agents panel --------------------------------------------------------------
+function toggleAgentsView(show) {
+  const panel = $id('panel');
+  const agentsPanel = $id('agents-panel');
+  const btn = $id('sidebar-agents-btn');
+  if (show) {
+    panel.style.display = 'none';
+    $id('instructions-panel').classList.remove('visible');
+    $id('sidebar-instructions-btn').classList.remove('active');
+    agentsPanel.classList.add('visible');
+    btn.classList.add('active');
+  } else {
+    panel.style.display = '';
+    agentsPanel.classList.remove('visible');
+    btn.classList.remove('active');
+  }
+}
+
+function _buildAgentItem(agent) {
+  const item = document.createElement('div');
+  item.className = 'agent-item';
+  if (agent) item.dataset.id = agent.id;
+  const modelBadge = agent && agent.model
+    ? `<span class="agent-model">${escHtml(agent.model)}</span>`
+    : '';
+  item.innerHTML = `
+    <div class="agent-header">
+      <span class="agent-name">${escHtml(agent ? agent.name : 'New agent')}</span>
+      <span class="agent-role">${escHtml(agent ? (agent.role || '') : '')}</span>
+      ${modelBadge}
+    </div>
+    <div class="agent-description">${escHtml(agent ? (agent.description || '') : '')}</div>
+    <div class="agent-edit-content" style="display:none;">
+      <div class="agent-edit-row">
+        <div class="agent-edit-field">
+          <label>Name</label>
+          <input type="text" class="agent-edit-name" value="${escHtml(agent ? agent.name : '')}" placeholder="Agent name">
+        </div>
+        <div class="agent-edit-field">
+          <label>Role</label>
+          <input type="text" class="agent-edit-role" value="${escHtml(agent ? (agent.role || '') : '')}" placeholder="developer, qa...">
+        </div>
+        <div class="agent-edit-field">
+          <label>Model</label>
+          <input type="text" class="agent-edit-model" value="${escHtml(agent ? (agent.model || '') : '')}" placeholder="optional">
+        </div>
+      </div>
+      <div class="agent-edit-field agent-edit-desc-wrap">
+        <label>Description</label>
+        <input type="text" class="agent-edit-desc" value="${escHtml(agent ? (agent.description || '') : '')}" placeholder="Short description">
+      </div>
+      <textarea class="instruction-editor agent-edit-prompt" placeholder="System prompt...">${escHtml(agent ? (agent.system_prompt || '') : '')}</textarea>
+      <div class="instruction-editor-actions">
+        <button class="btn-agent-delete btn-ghost btn-sm" style="color:var(--red);margin-right:auto">Delete</button>
+        <button class="btn-agent-save btn-save-instruction">Save</button>
+        <button class="btn-agent-discard btn-cancel-edit">Discard</button>
+      </div>
+    </div>
+  `;
+  return item;
+}
+
+function _attachAgentItemListeners(item, isNew) {
+  const agentId = item.dataset.id;
+  const nameEl = item.querySelector('.agent-name');
+  const editContent = item.querySelector('.agent-edit-content');
+
+  nameEl.addEventListener('click', () => {
+    const isOpen = editContent.style.display !== 'none';
+    editContent.style.display = isOpen ? 'none' : 'block';
+    nameEl.classList.toggle('editing', !isOpen);
+    if (!isOpen) item.querySelector('.agent-edit-name').focus();
+  });
+
+  item.querySelector('.btn-agent-discard').addEventListener('click', () => {
+    if (isNew) { item.remove(); return; }
+    editContent.style.display = 'none';
+    nameEl.classList.remove('editing');
+  });
+
+  item.querySelector('.btn-agent-save').addEventListener('click', async () => {
+    const data = {
+      name: item.querySelector('.agent-edit-name').value.trim(),
+      role: item.querySelector('.agent-edit-role').value.trim(),
+      model: item.querySelector('.agent-edit-model').value.trim() || null,
+      description: item.querySelector('.agent-edit-desc').value.trim(),
+      system_prompt: item.querySelector('.agent-edit-prompt').value.trim(),
+    };
+    if (!data.name) { alert('Name is required'); return; }
+    try {
+      if (isNew) {
+        await api.createAgent(data);
+      } else {
+        await api.updateAgent(agentId, data);
+      }
+      await loadAgents($id('agent-search')?.value || '');
+    } catch (err) {
+      alert('Failed to save agent: ' + err.message);
+    }
+  });
+
+  item.querySelector('.btn-agent-delete').addEventListener('click', async () => {
+    if (isNew) { item.remove(); return; }
+    if (!confirm('Delete this agent?')) return;
+    try {
+      await api.deleteAgent(agentId);
+      await loadAgents($id('agent-search')?.value || '');
+    } catch (err) {
+      alert('Failed to delete agent: ' + err.message);
+    }
+  });
+}
+
+async function loadAgents(searchQuery = '') {
+  const listContainer = $id('agent-list');
+  if (!listContainer) return;
+  listContainer.innerHTML = '';
+
+  try {
+    const response = await api.listAgents();
+    if (!response) throw new Error('Failed to fetch agents');
+    let agents = response.agents || [];
+
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase();
+      agents = agents.filter(a =>
+        a.name.toLowerCase().includes(q) ||
+        (a.description || '').toLowerCase().includes(q) ||
+        (a.role || '').toLowerCase().includes(q)
+      );
+    }
+
+    if (agents.length === 0) {
+      listContainer.innerHTML = `
+        <div class="agents-empty-state">
+          <div class="empty-state-icon">🤖</div>
+          <p class="empty-state-text">No agents found</p>
+          <p class="empty-state-subtext">Create an agent to get started</p>
+        </div>
+      `;
+      return;
+    }
+
+    agents.forEach(agent => {
+      const item = _buildAgentItem(agent);
+      listContainer.appendChild(item);
+      _attachAgentItemListeners(item, false);
+    });
+
+  } catch (err) {
+    console.error('Error loading agents:', err);
+    listContainer.innerHTML = '<div class="error">Failed to load agents</div>';
+  }
+}
+
+async function renderAgents() {
+  const pane = $id('agents-panel');
+  pane.innerHTML = `
+    <div class="agents-layout">
+      <div class="agents-toolbar">
+        <input type="text" id="agent-search" placeholder="Search agents..." />
+        <button class="btn-new-agent" id="btn-new-agent">+ New Agent</button>
+      </div>
+      <div id="agent-list"></div>
+    </div>
+  `;
+
+  await loadAgents();
+
+  $id('agent-search').addEventListener('input', debounce(async (e) => {
+    await loadAgents(e.target.value);
+  }, 300));
+
+  $id('btn-new-agent').addEventListener('click', () => {
+    const listContainer = $id('agent-list');
+    const emptyState = listContainer.querySelector('.agents-empty-state');
+    if (emptyState) emptyState.remove();
+    const item = _buildAgentItem(null);
+    listContainer.insertBefore(item, listContainer.firstChild);
+    _attachAgentItemListeners(item, true);
+    item.querySelector('.agent-edit-content').style.display = 'block';
+    item.querySelector('.agent-name').classList.add('editing');
+    item.querySelector('.agent-edit-name').focus();
+  });
+}
+
 // -- Instructions panel --------------------------------------------------------
 function toggleInstructionsView(show) {
   const panel = $id('panel');
@@ -970,6 +1168,8 @@ function toggleInstructionsView(show) {
   const btn = $id('sidebar-instructions-btn');
   if (show) {
     panel.style.display = 'none';
+    $id('agents-panel').classList.remove('visible');
+    $id('sidebar-agents-btn').classList.remove('active');
     instrPanel.classList.add('visible');
     btn.classList.add('active');
   } else {
@@ -1758,7 +1958,8 @@ function uiRunTask() {
 
   // If bulk selection exists, run bulk; otherwise run single task
   if (state.bulkSelectedTaskIds && state.bulkSelectedTaskIds.length > 0) {
-    runBulkTasks(state.selectedPlanId, state.bulkSelectedTaskIds, '', autoDone);
+    const bulkAgent = state.projectAgentsByPhase['dev'] || '';
+    runBulkTasks(state.selectedPlanId, state.bulkSelectedTaskIds, '', autoDone, bulkAgent);
   } else {
     const t = _getUiTask();
     if (t) {
@@ -1870,11 +2071,30 @@ async function switchCurrentTask(planId, taskId) {
 }
 
 // -- Run task modal ----------------------------------------------------------
-function openRunModal(trackId, taskId, taskTitle, autoDone = true) {
+async function openRunModal(trackId, taskId, taskTitle, autoDone = true) {
   state.runTask = { trackId, taskId };
   $id('run-task-title').textContent = taskTitle;
   $id('run-task-comment').value = '';
   $id('run-task-auto-done').checked = autoDone;
+
+  // Populate agent selector
+  const sel = $id('run-task-agent');
+  sel.innerHTML = '<option value="">— none —</option>';
+  try {
+    const data = await api.listAgents();
+    if (data && data.agents) {
+      data.agents.forEach(a => {
+        const opt = document.createElement('option');
+        opt.value = a.id;
+        opt.textContent = a.name + (a.role ? ` (${a.role})` : '');
+        sel.appendChild(opt);
+      });
+    }
+    // Pre-select agent configured for the "dev" phase
+    const devAgent = state.projectAgentsByPhase['dev'];
+    if (devAgent) sel.value = devAgent;
+  } catch (_) {}
+
   $id('modal-run-overlay').classList.remove('hidden');
   setTimeout(() => $id('run-task-comment').focus(), 50);
 }
@@ -1889,8 +2109,9 @@ function confirmRunTask() {
   const { trackId, taskId } = state.runTask;
   const comment = $id('run-task-comment').value.trim();
   const autoDone = $id('run-task-auto-done').checked;
+  const agentId = $id('run-task-agent').value;
   closeRunModal();
-  runTask(trackId, taskId, comment, autoDone);
+  runTask(trackId, taskId, comment, autoDone, agentId);
 }
 
 // -- Streaming helpers -------------------------------------------------------
@@ -2036,7 +2257,7 @@ function _getTerminalTitle(planId) {
   return planId || 'Task';
 }
 
-async function runTask(planId, taskId, comment = '', autoDone = true) {
+async function runTask(planId, taskId, comment = '', autoDone = true, agentId = '') {
   if (state.outputEventSource) {
     state.outputEventSource.close();
     state.outputEventSource = null;
@@ -2055,6 +2276,9 @@ async function runTask(planId, taskId, comment = '', autoDone = true) {
     if (state.selectedInstructionIds && state.selectedInstructionIds.size > 0) {
       params.append('instructions', Array.from(state.selectedInstructionIds).join(','));
     }
+
+    // Add selected agent if any
+    if (agentId) params.append('agent_id', agentId);
 
     // Prepare the task server-side: switch to task, build prompt, save to temp file
     const resp = await fetch(`/api/tracks/${planId}/tasks/${taskId}/prepare-run?${params}`);
@@ -2077,7 +2301,7 @@ async function runTask(planId, taskId, comment = '', autoDone = true) {
   }
 }
 
-function runBulkTasks(trackId, taskIds, comment = '', autoDone = true) {
+function runBulkTasks(trackId, taskIds, comment = '', autoDone = true, agentId = '') {
   if (state.outputEventSource) {
     state.outputEventSource.close();
     state.outputEventSource = null;
@@ -2097,9 +2321,10 @@ function runBulkTasks(trackId, taskIds, comment = '', autoDone = true) {
     task_ids: taskIds,
     comment: comment,
     auto_done: autoDone,
-    instructions: state.selectedInstructionIds && state.selectedInstructionIds.size > 0 
-      ? Array.from(state.selectedInstructionIds).join(',') 
+    instructions: state.selectedInstructionIds && state.selectedInstructionIds.size > 0
+      ? Array.from(state.selectedInstructionIds).join(',')
       : '',
+    agent_id: agentId || '',
   };
 
   const url = `/api/tracks/${trackId}/tasks/bulk-run`;
@@ -2147,7 +2372,8 @@ function runBulkTasks(trackId, taskIds, comment = '', autoDone = true) {
                 state._outputDone = true;
                 state.bulkSelectedTaskIds = [];
                 bulkTerminal.term.write('\r\n✓ Bulk execution complete\r\n');
-                refresh();
+                await refresh();
+                if (state.selectedPlanId) await renderPanelFor(state.selectedPlanId);
                 return;
               }
 
@@ -2571,6 +2797,31 @@ function setupEventListeners() {
     localStorage.setItem('sidebar-collapsed', collapsed);
   });
 
+  // Collapsible sidebar sections
+  const sidebarSectionState = {
+    'sidebar-section-tracks': false,
+    'sidebar-section-customisation': false,
+  };
+
+  function toggleSection(sectionId) {
+    const section = $id(sectionId);
+    if (!section) return;
+    const collapsed = section.classList.toggle('sidebar-section--collapsed');
+    sidebarSectionState[sectionId] = collapsed;
+    localStorage.setItem(`arche-sidebar-section-${sectionId}-collapsed`, collapsed);
+  }
+
+  function initSidebarSection(sectionId) {
+    const section = $id(sectionId);
+    if (!section) return;
+    const wasCollapsed = localStorage.getItem(`arche-sidebar-section-${sectionId}-collapsed`) === 'true';
+    if (wasCollapsed) section.classList.add('sidebar-section--collapsed');
+    sidebarSectionState[sectionId] = wasCollapsed;
+    section.querySelector('.sidebar-section-header').addEventListener('click', () => toggleSection(sectionId));
+  }
+  initSidebarSection('sidebar-section-customisation');
+  initSidebarSection('sidebar-section-tracks');
+
   // Instructions sidebar button
   $id('sidebar-instructions-btn').addEventListener('click', async () => {
     const instrPanel = $id('instructions-panel');
@@ -2580,6 +2831,18 @@ function setupEventListeners() {
     } else {
       toggleInstructionsView(true);
       await renderInstructions();
+    }
+  });
+
+  // Agents sidebar button
+  $id('sidebar-agents-btn').addEventListener('click', async () => {
+    const agentsPanel = $id('agents-panel');
+    const isShowing = agentsPanel.classList.contains('visible');
+    if (isShowing) {
+      toggleAgentsView(false);
+    } else {
+      toggleAgentsView(true);
+      await renderAgents();
     }
   });
 
@@ -3348,10 +3611,18 @@ async function _loadModelsTab() {
   $id('settings-models-unavailable').classList.add('hidden');
 
   const { tools, current, phases, defaults } = _settingsModelsData;
+  const currentAgents = _settingsModelsData.agents || {};
   const toolAliases = Object.keys(tools);
 
-  // Header row
-  ['Phase', 'Tool', 'Model'].forEach(h => {
+  // Fetch agents list for agent selects
+  let agentsList = [];
+  try {
+    const agentsResp = await api.listAgents();
+    agentsList = (agentsResp && agentsResp.agents) ? agentsResp.agents : [];
+  } catch (_) {}
+
+  // Header row (4 columns)
+  ['Phase', 'Tool', 'Model', 'Agent'].forEach(h => {
     const hdr = document.createElement('div');
     hdr.className = 'settings-grid-header';
     hdr.textContent = h;
@@ -3365,6 +3636,7 @@ async function _loadModelsTab() {
     if (currentVal.includes('/')) {
       [currentTool, currentModel] = currentVal.split('/');
     }
+    const currentAgentId = currentAgents[phase] || '';
 
     // Phase label
     const label = document.createElement('div');
@@ -3400,9 +3672,25 @@ async function _loadModelsTab() {
     populateModels(currentTool || toolAliases[0], currentModel);
     toolSel.addEventListener('change', () => populateModels(toolSel.value, ''));
 
+    // Agent select
+    const agentSel = document.createElement('select');
+    agentSel.id = `settings-agent-${phase}`;
+    const noneOpt = document.createElement('option');
+    noneOpt.value = '';
+    noneOpt.textContent = '— none —';
+    agentSel.appendChild(noneOpt);
+    for (const a of agentsList) {
+      const opt = document.createElement('option');
+      opt.value = a.id;
+      opt.textContent = a.name + (a.role ? ` (${a.role})` : '');
+      if (a.id === currentAgentId) opt.selected = true;
+      agentSel.appendChild(opt);
+    }
+
     container.appendChild(label);
     container.appendChild(toolSel);
     container.appendChild(modelSel);
+    container.appendChild(agentSel);
   }
 }
 
@@ -3445,9 +3733,14 @@ async function saveSettings() {
         const modelSel = $id(`settings-model-${phase}`);
         if (toolSel && modelSel) models[phase] = `${toolSel.value}/${modelSel.value}`;
       }
+      const agents = {};
+      for (const phase of (_settingsModelsData.phases || [])) {
+        const asel = $id(`settings-agent-${phase}`);
+        if (asel && asel.value) agents[phase] = asel.value;
+      }
       await apiFetch('/api/settings/models', {
         method: 'PATCH',
-        body: JSON.stringify({ models }),
+        body: JSON.stringify({ models, agents }),
       });
     } else if (_settingsActiveTab === 'security') {
       const password = $id('settings-password-input').value;

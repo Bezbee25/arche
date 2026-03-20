@@ -63,15 +63,34 @@
     <div id="main">
       <!-- Sidebar: plan list -->
       <aside id="sidebar">
-        <div id="sidebar-instructions-btn" class="sidebar-nav-item">Instructions</div>
-        <div class="sidebar-sep"></div>
-        <div class="sidebar-label">TRACKS</div>
-        <div id="plan-list"></div>
+        <div class="sidebar-section" id="sidebar-section-customisation">
+          <div class="sidebar-section-header" id="sidebar-section-header-customisation">
+            <span class="sidebar-section-title">Customisation</span>
+            <span class="sidebar-section-chevron">▾</span>
+          </div>
+          <div class="sidebar-section-body">
+            <div id="sidebar-instructions-btn" class="sidebar-nav-item">Instructions</div>
+            <div id="sidebar-agents-btn" class="sidebar-nav-item">Agents</div>
+          </div>
+        </div>
+
+        <div class="sidebar-section" id="sidebar-section-tracks">
+          <div class="sidebar-section-header" id="sidebar-section-header-tracks">
+            <span class="sidebar-section-title">Tracks</span>
+            <span class="sidebar-section-chevron">▾</span>
+          </div>
+          <div class="sidebar-section-body">
+            <div id="plan-list"></div>
+          </div>
+        </div>
       </aside>
       <button id="sidebar-toggle" title="Toggle sidebar">‹</button>
 
       <!-- Instructions panel (full-page, replaces panel when active) -->
       <div id="instructions-panel"></div>
+
+      <!-- Agents panel (full-page, replaces panel when active) -->
+      <div id="agents-panel"></div>
 
       <!-- Central panel -->
       <section id="panel">
@@ -177,6 +196,10 @@
       <div id="run-task-title" class="modal-subtitle"></div>
       <label class="modal-section-label" for="run-task-comment">Comment <span class="modal-hint">(optional — bug found, extra context…)</span></label>
       <textarea id="run-task-comment" rows="4" placeholder="e.g. The login redirect fails with a 403, focus on the JWT validation…"></textarea>
+      <label class="modal-section-label" style="margin-top:12px;" for="run-task-agent">Agent <span class="modal-hint">(optional — overrides system prompt)</span></label>
+      <select id="run-task-agent" style="width:100%;margin-bottom:8px;">
+        <option value="">— none —</option>
+      </select>
       <label class="modal-section-label" style="margin-top:12px;">
         <input type="checkbox" id="run-task-auto-done" checked>
         Auto-done <span class="modal-hint">(mark as done when run completes)</span>
@@ -417,7 +440,7 @@
       <!-- Tab bar -->
       <div class="settings-tab-bar">
         <button class="settings-tab active" data-tab="paths">Protected paths</button>
-        <button class="settings-tab" data-tab="models">CLI &amp; Models</button>
+        <button class="settings-tab" data-tab="models">CLI &amp; Model &amp; Agents</button>
         <button class="settings-tab" data-tab="security">🔐 Security</button>
       </div>
 

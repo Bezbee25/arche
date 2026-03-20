@@ -75,15 +75,15 @@ install-pipx:
 		echo "  → pipx not found, installing..."; \
 		if command -v apt >/dev/null 2>&1; then \
 			sudo apt install -y pipx 2>/dev/null || \
-			$(PYTHON) -m pip install pipx --break-system-packages --quiet; \
+			$(PYTHON) -m pip install pipx --break-system-packages --quiet --force; \
 		else \
-			$(PYTHON) -m pip install pipx --break-system-packages --quiet; \
+			$(PYTHON) -m pip install pipx --break-system-packages --quiet --force; \
 		fi; \
 		$(PYTHON) -m pipx ensurepath; \
 		echo "  ⚠  Restart your shell or run: source ~/.bashrc"; \
 	fi
 	@echo "  → Installing arche via pipx..."
-	pipx install --editable . 2>/dev/null || pipx install .
+	pipx install --force --editable . 2>/dev/null || pipx install .
 	@echo ""
 	@echo "  ✓ arche installed globally via pipx"
 	@echo ""

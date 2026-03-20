@@ -979,6 +979,7 @@ def task_next() -> None:
 def task_switch(
     target: str = typer.Argument(..., help="Task number, id (or prefix), or title substring"),
     bulk: bool = typer.Option(False, "--bulk", help="Execute multiple tasks in sequence (requires space-separated task IDs or numbers after --bulk)"),
+    instructions: Optional[str] = typer.Option(None, "--instructions", "-i", help="IDs d'instructions à injecter dans le prompt (séparés par des virgules, bulk uniquement)"),
 ) -> None:
     """Switch the current task (by number, id, or title), or execute multiple tasks with --bulk."""
     _require_project()
@@ -1044,7 +1045,11 @@ def task_switch(
             all_files = list(dict.fromkeys(track_files + task_files))
             text_files, image_files = split_files_by_type(all_files)
 
-            prompt = build_task_prompt(track_id, plan, comment="", attached_files=text_files)
+            selected_instruction_ids = [i.strip() for i in instructions.split(",") if i.strip()] if instructions else []
+            prompt = build_task_prompt(track_id, plan, comment="", selected_instruction_ids=selected_instruction_ids, attached_files=text_files)
+            if selected_instruction_ids:
+                from core.session_logger import log_instructions_used
+                log_instructions_used(track_id, selected_instruction_ids)
             slog(track_id, f"Bulk task {i}: **{task['title']}**", "BULK_RUN")
 
             phase = plan.get("phase", "dev")
@@ -1094,6 +1099,7 @@ def task_switch(
 def task_run(
     auto_done: bool = typer.Option(True, "--auto-done", "--no-auto-done", help="Mark task as DONE automatically after run (default: enabled)"),
     comment: Optional[str] = typer.Option(None, "--comment", "-m", help="Commentaire ou contexte additionnel (bug constaté, précision…)"),
+    instructions: Optional[str] = typer.Option(None, "--instructions", "-i", help="IDs d'instructions à injecter dans le prompt (séparés par des virgules)"),
 ) -> None:
     """Lance la tâche courante : construit le contexte complet et appelle le LLM."""
     _require_project()
@@ -1127,7 +1133,11 @@ def task_run(
     text_files, image_files = split_files_by_type(all_files)
 
     # Construire le prompt avec tout le contexte
-    prompt = build_task_prompt(track_id, plan, comment=comment or "", attached_files=text_files)
+    selected_instruction_ids = [i.strip() for i in instructions.split(",") if i.strip()] if instructions else []
+    prompt = build_task_prompt(track_id, plan, comment=comment or "", selected_instruction_ids=selected_instruction_ids, attached_files=text_files)
+    if selected_instruction_ids:
+        from core.session_logger import log_instructions_used
+        log_instructions_used(track_id, selected_instruction_ids)
 
     slog(track_id, f"Lancement tâche : **{task['title']}**" + (f"\n\nCommentaire : {comment}" if comment else ""), "RUN")
 
