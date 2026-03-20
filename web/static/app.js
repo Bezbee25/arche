@@ -3225,7 +3225,8 @@ async function testJiraJql() {
       status.textContent = '✗ Server error — check Jira settings';
       status.className = 'jira-status err';
     } else if (result.ok) {
-      status.textContent = `✓ ${result.total} issue${result.total !== 1 ? 's' : ''} matched`;
+      const countLabel = result.total === -1 ? `${result.preview.length}+` : `${result.total}`;
+      status.textContent = `✓ ${countLabel} issue${result.total !== 1 ? 's' : ''} matched`;
       status.className = 'jira-status ok';
       if (result.preview && result.preview.length > 0) {
         preview.style.display = 'block';
